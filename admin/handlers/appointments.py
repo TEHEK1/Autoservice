@@ -78,18 +78,40 @@ async def command_appointments(message: Message):
             # Создаем кнопки для каждой записи
             buttons = []
             for appointment in appointments:
-                client_response = await client.get(f"{API_URL}/clients/{appointment['client_id']}")
-                client = client_response.json()
-                
-                scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
-                formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
-                
-                buttons.append([
-                    InlineKeyboardButton(
-                        text=f"{client['name']} - {formatted_time}",
-                        callback_data=AppointmentCallback(id=appointment['id'], action="view").pack()
-                    )
+                try:
+                    if not appointment.get('client_id'):
+                        logger.warning(f"У записи {appointment['id']} отсутствует client_id")
+                        continue
+                        
+                    client_response = await client.get(f"{API_URL}/clients/{appointment['client_id']}")
+                    if client_response.status_code != 200:
+                        logger.warning(f"Ошибка при получении клиента {appointment['client_id']}: {client_response.status_code}")
+                        continue
+                        
+                    client_data = client_response.json()
+                    if not client_data:
+                        logger.warning(f"Получен пустой ответ для клиента {appointment['client_id']}")
+                        continue
+                    
+                    scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+                    formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
+                    
+                    buttons.append([
+                        InlineKeyboardButton(
+                            text=f"{client_data['name']} - {formatted_time}",
+                            callback_data=AppointmentCallback(id=appointment['id'], action="view").pack()
+                        )
+                    ])
+                except Exception as e:
+                    logger.error(f"Ошибка при получении информации о клиенте {appointment.get('client_id', 'unknown')}: {e}")
+                    continue
+            
+            if not buttons:
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="➕ Создать запись", callback_data="create_appointment")]
                 ])
+                await message.answer("📝 Нет доступных записей", reply_markup=keyboard)
+                return
             
             # Добавляем кнопки управления
             buttons.extend([
@@ -146,94 +168,16 @@ async def process_appointment_selection(callback: CallbackQuery, callback_data: 
         appointment_id = callback_data.id
         logger.info(f"Получаем информацию о записи {appointment_id}")
         
-        # Получаем информацию о записи и связанных данных
-        async with httpx.AsyncClient() as http_client:
-            # Получаем информацию о записи
-            response = await http_client.get(f"{API_URL}/appointments/{appointment_id}")
-            response.raise_for_status()
-            appointment = response.json()
-            logger.info(f"Получена запись: {appointment}")
-            
-            # Получаем информацию о клиенте
-            client_response = await http_client.get(f"{API_URL}/clients/{appointment['client_id']}")
-            client_response.raise_for_status()
-            client_data = client_response.json()
-            logger.info(f"Получен клиент: {client_data}")
-            
-            # Получаем информацию об услуге
-            try:
-                service_response = await http_client.get(f"{API_URL}/services/{appointment['service_id']}")
-                service_response.raise_for_status()
-                service = service_response.json()
-                logger.info(f"Получена услуга: {service}")
-                service_info = f"🔧 Услуга: {service['name']}\n💰 Стоимость: {service['price']} руб.\n"
-            except httpx.HTTPError:
-                logger.warning(f"Услуга с ID {appointment['service_id']} не найдена")
-                service_info = "🔧 Услуга: Не найдена\n"
-            
-            # Форматируем дату и время
-            scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
-            formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
-            
-            # Создаем клавиатуру с кнопками управления
-            buttons = [
-                [
-                    InlineKeyboardButton(
-                        text="📅 Изменить дату",
-                        callback_data=AppointmentCallback(action="edit_date", id=appointment_id).pack()
-                    ),
-                    InlineKeyboardButton(
-                        text="⏰ Изменить время",
-                        callback_data=AppointmentCallback(action="edit_time", id=appointment_id).pack()
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔧 Изменить услугу",
-                        callback_data=AppointmentCallback(action="edit_service", id=appointment_id).pack()
-                    ),
-                    InlineKeyboardButton(
-                        text="🔄 Изменить статус",
-                        callback_data=AppointmentCallback(action="edit_status", id=appointment_id).pack()
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="👤 Просмотр клиента",
-                        callback_data=ViewClientCallback(appointment_id=appointment_id).pack()
-                    ),
-                    InlineKeyboardButton(
-                        text="❌ Удалить запись",
-                        callback_data=AppointmentCallback(action="delete", id=appointment_id).pack()
-                    )
-                ],
-                [
-                    InlineKeyboardButton(text="◀️ Назад к списку", callback_data="back_to_appointments"),
-                    InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")
-                ]
-            ]
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-            
-            # Формируем сообщение с информацией о записи
-            message = (
-                f"📝 Запись #{appointment_id}\n\n"
-                f"👤 Клиент: {client_data['name']}\n"
-                f"📱 Телефон: {client_data['phone_number']}\n"
-                f"🚗 Автомобиль: {appointment.get('car_model', 'Не указан')}\n"
-                f"{service_info}"
-                f"📅 Дата и время: {formatted_time}\n"
-                f"📊 Статус: {appointment.get('status', 'pending')}\n"
-            )
-            
-            await callback.message.edit_text(message, reply_markup=keyboard)
-            await callback.answer()
+        # Получаем информацию о записи
+        message_text, keyboard = await get_appointment_info(appointment_id)
+        await callback.message.edit_text(message_text, reply_markup=keyboard)
+        await callback.answer()
             
     except Exception as e:
         logger.error(f"Ошибка при просмотре записи: {e}")
         await callback.answer("❌ Произошла ошибка при получении информации о записи", show_alert=True)
 
-@router.callback_query(AppointmentCallback.filter(F.action.in_(["edit_date", "edit_time", "edit_service", "edit_status", "delete"])))
+@router.callback_query(AppointmentCallback.filter(F.action.in_(["edit_date", "edit_time", "edit_service", "edit_status", "edit_car", "delete"])))
 async def process_edit_appointment(callback: types.CallbackQuery, callback_data: AppointmentCallback, state: FSMContext):
     """Обработка редактирования записи"""
     appointment_id = callback_data.id
@@ -245,6 +189,7 @@ async def process_edit_appointment(callback: types.CallbackQuery, callback_data:
             response = await client.get(f"{API_URL}/services")
             response.raise_for_status()
             services = response.json()
+            logger.info(f"Получен список услуг: {services}")
             
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -269,17 +214,13 @@ async def process_edit_appointment(callback: types.CallbackQuery, callback_data:
         await state.set_state(EditAppointmentState.waiting_for_value)
         await state.update_data(appointment_id=appointment_id, field="time")
     elif action == "edit_status":
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=status,
-                        callback_data=AppointmentCallback(id=appointment_id, action=f"set_status_{status}").pack()
-                    )
-                ] for status in ["pending", "confirmed", "completed", "cancelled"]
-            ]
-        )
-        await callback.message.edit_text("Выберите новый статус:", reply_markup=keyboard)
+        await callback.message.edit_text("Введите новый статус (pending, confirmed, completed, cancelled):")
+        await state.set_state(EditAppointmentState.waiting_for_value)
+        await state.update_data(appointment_id=appointment_id, field="status")
+    elif action == "edit_car":
+        await callback.message.edit_text("Введите новую модель автомобиля:")
+        await state.set_state(EditAppointmentState.waiting_for_value)
+        await state.update_data(appointment_id=appointment_id, field="car_model")
     elif action == "delete":
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -308,95 +249,33 @@ async def process_service_selection(callback: types.CallbackQuery, callback_data
     try:
         async with httpx.AsyncClient() as client:
             # Проверяем существование услуги
+            logger.info(f"Запрос на получение услуги: GET {API_URL}/services/{service_id}")
             service_response = await client.get(f"{API_URL}/services/{service_id}")
             service_response.raise_for_status()
             service = service_response.json()
+            logger.info(f"Получена услуга: {service}")
             
             # Получаем текущую запись
-            response = await client.get(f"{API_URL}/appointments/{appointment_id}")
-            response.raise_for_status()
-            appointment = response.json()
+            logger.info(f"Запрос на получение записи: GET {API_URL}/appointments/{appointment_id}")
+            appointment_response = await client.get(f"{API_URL}/appointments/{appointment_id}")
+            appointment_response.raise_for_status()
+            appointment = appointment_response.json()
+            logger.info(f"Получена запись: {appointment}")
             
             # Обновляем запись с новой услугой
             update_data = {
-                "client_id": appointment['client_id'],
-                "service_id": service_id,
-                "scheduled_time": appointment['scheduled_time'],
-                "status": appointment.get('status', 'pending'),
-                "car_model": appointment.get('car_model', '')
+                "service_id": service_id  # Используем ID из callback_data
             }
-            
+            logger.info(f"Запрос на обновление записи: PATCH {API_URL}/appointments/{appointment_id} с данными {update_data}")
             response = await client.patch(f"{API_URL}/appointments/{appointment_id}", json=update_data)
             response.raise_for_status()
             
-            # Получаем обновленную запись
-            response = await client.get(f"{API_URL}/appointments/{appointment_id}")
-            response.raise_for_status()
-            updated_appointment = response.json()
-            
-            # Получаем информацию о клиенте
-            client_response = await client.get(f"{API_URL}/clients/{updated_appointment['client_id']}")
-            client_response.raise_for_status()
-            client_data = client_response.json()
-            
-            # Форматируем дату и время
-            scheduled_time = datetime.fromisoformat(updated_appointment['scheduled_time'].replace('Z', '+00:00'))
-            formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
-            
-            # Формируем сообщение с информацией о записи
-            message = (
-                f"📝 Запись #{appointment_id}\n\n"
-                f"👤 Клиент: {client_data['name']}\n"
-                f"📱 Телефон: {client_data['phone_number']}\n"
-                f"🚗 Автомобиль: {updated_appointment.get('car_model', 'Не указан')}\n"
-                f"🔧 Услуга: {service['name']}\n"
-                f"💰 Стоимость: {service['price']} руб.\n"
-                f"📅 Дата и время: {formatted_time}\n"
-                f"📊 Статус: {updated_appointment.get('status', 'pending')}\n"
-            )
-            
-            # Создаем клавиатуру с кнопками управления
-            buttons = [
-                [
-                    InlineKeyboardButton(
-                        text="📅 Изменить дату",
-                        callback_data=AppointmentCallback(action="edit_date", id=appointment_id).pack()
-                    ),
-                    InlineKeyboardButton(
-                        text="⏰ Изменить время",
-                        callback_data=AppointmentCallback(action="edit_time", id=appointment_id).pack()
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🔧 Изменить услугу",
-                        callback_data=AppointmentCallback(action="edit_service", id=appointment_id).pack()
-                    ),
-                    InlineKeyboardButton(
-                        text="🔄 Изменить статус",
-                        callback_data=AppointmentCallback(action="edit_status", id=appointment_id).pack()
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="👤 Просмотр клиента",
-                        callback_data=ViewClientCallback(appointment_id=appointment_id).pack()
-                    ),
-                    InlineKeyboardButton(
-                        text="❌ Удалить запись",
-                        callback_data=AppointmentCallback(action="delete", id=appointment_id).pack()
-                    )
-                ],
-                [
-                    InlineKeyboardButton(text="◀️ Назад к списку", callback_data="back_to_appointments"),
-                    InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")
-                ]
-            ]
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-            
-            await callback.message.edit_text(message, reply_markup=keyboard)
             await callback.answer("✅ Услуга успешно изменена!")
+            await state.clear()
+            
+            # Показываем обновленную информацию о записи
+            message_text, keyboard = await get_appointment_info(appointment_id)
+            await callback.message.edit_text(message_text, reply_markup=keyboard)
             
     except httpx.HTTPError as e:
         if e.response and e.response.status_code == 404:
@@ -404,7 +283,7 @@ async def process_service_selection(callback: types.CallbackQuery, callback_data
         else:
             await callback.message.edit_text(f"❌ Ошибка при обновлении услуги: {str(e)}")
     
-    await state.clear()
+    await callback.answer()
 
 @router.callback_query(ViewClientCallback.filter())
 async def view_appointment_client(callback: CallbackQuery, callback_data: ViewClientCallback):
@@ -473,4 +352,251 @@ async def clients_menu(callback: types.CallbackQuery):
 async def services_menu(callback: types.CallbackQuery):
     """Показать список услуг"""
     await services.command_services(callback.message)
-    await callback.answer() 
+    await callback.answer()
+
+@router.callback_query(AppointmentCallback.filter(F.action == "confirm_delete"))
+async def process_confirm_delete(callback: types.CallbackQuery, callback_data: AppointmentCallback):
+    """Обработка подтверждения удаления записи"""
+    try:
+        appointment_id = callback_data.id
+        async with httpx.AsyncClient() as client:
+            # Удаляем запись
+            response = await client.delete(f"{API_URL}/appointments/{appointment_id}")
+            response.raise_for_status()
+            
+            await callback.message.edit_text("✅ Запись успешно удалена")
+            
+            # Показываем обновленный список записей
+            await command_appointments(callback.message)
+            
+    except Exception as e:
+        logger.error(f"Ошибка при удалении записи: {e}")
+        await callback.message.edit_text("❌ Произошла ошибка при удалении записи")
+    
+    await callback.answer()
+
+async def get_appointment_info(appointment_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Получение информации о записи"""
+    try:
+        async with httpx.AsyncClient() as http_client:
+            # Получаем информацию о записи
+            response = await http_client.get(f"{API_URL}/appointments/{appointment_id}")
+            response.raise_for_status()
+            appointment = response.json()
+            logger.info(f"Получена запись: {appointment}")
+            
+            if not appointment:
+                raise ValueError(f"Запись с ID {appointment_id} не найдена")
+            
+            # Получаем информацию о клиенте
+            client_info = "👤 Клиент: Не найден\n📱 Телефон: Не указан\n"
+            if appointment.get('client_id'):
+                try:
+                    client_response = await http_client.get(f"{API_URL}/clients/{appointment['client_id']}")
+                    if client_response.status_code == 200:
+                        client_data = client_response.json()
+                        if client_data:
+                            client_info = (
+                                f"👤 Клиент: {client_data['name']}\n"
+                                f"📱 Телефон: {client_data['phone_number']}\n"
+                            )
+                except Exception as e:
+                    logger.error(f"Ошибка при получении информации о клиенте {appointment['client_id']}: {e}")
+            
+            # Получаем информацию об услуге
+            service_info = "🔧 Услуга: Не найдена\n"
+            if appointment.get('service_id'):
+                try:
+                    service_response = await http_client.get(f"{API_URL}/services/{appointment['service_id']}")
+                    if service_response.status_code == 200:
+                        service = service_response.json()
+                        if service:
+                            service_info = f"🔧 Услуга: {service['name']}\n💰 Стоимость: {service['price']} руб.\n"
+                except Exception as e:
+                    logger.error(f"Ошибка при получении информации об услуге {appointment['service_id']}: {e}")
+            
+            # Форматируем дату и время
+            scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+            formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
+            
+            # Создаем клавиатуру с кнопками управления
+            buttons = [
+                [
+                    InlineKeyboardButton(
+                        text="📅 Изменить дату",
+                        callback_data=AppointmentCallback(action="edit_date", id=appointment_id).pack()
+                    ),
+                    InlineKeyboardButton(
+                        text="⏰ Изменить время",
+                        callback_data=AppointmentCallback(action="edit_time", id=appointment_id).pack()
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🔧 Изменить услугу",
+                        callback_data=AppointmentCallback(action="edit_service", id=appointment_id).pack()
+                    ),
+                    InlineKeyboardButton(
+                        text="🚗 Изменить авто",
+                        callback_data=AppointmentCallback(action="edit_car", id=appointment_id).pack()
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="🔄 Изменить статус",
+                        callback_data=AppointmentCallback(action="edit_status", id=appointment_id).pack()
+                    ),
+                    InlineKeyboardButton(
+                        text="👤 Просмотр клиента",
+                        callback_data=ViewClientCallback(appointment_id=appointment_id).pack()
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="❌ Удалить запись",
+                        callback_data=AppointmentCallback(action="delete", id=appointment_id).pack()
+                    )
+                ],
+                [
+                    InlineKeyboardButton(text="◀️ Назад к списку", callback_data="back_to_appointments"),
+                    InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")
+                ]
+            ]
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            
+            # Формируем сообщение с информацией о записи
+            message = (
+                f"📝 Запись #{appointment_id}\n\n"
+                f"{client_info}"
+                f"🚗 Автомобиль: {appointment.get('car_model', 'Не указан')}\n"
+                f"{service_info}"
+                f"📅 Дата и время: {formatted_time}\n"
+                f"📊 Статус: {appointment.get('status', 'Не указан')}\n"
+            )
+            
+            return message, keyboard
+            
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о записи: {e}")
+        raise
+
+@router.message(EditAppointmentState.waiting_for_value)
+async def process_edit_value(message: Message, state: FSMContext):
+    """Обработка нового значения для редактирования записи"""
+    try:
+        data = await state.get_data()
+        appointment_id = data['appointment_id']
+        field = data['field']
+        
+        if field == "date":
+            # Парсим дату
+            try:
+                date_obj = datetime.strptime(message.text.strip(), "%d.%m.%Y")
+            except ValueError:
+                await message.answer("❌ Неверный формат даты. Используйте формат ДД.ММ.ГГГГ")
+                return
+                
+            # Получаем текущую запись
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{API_URL}/appointments/{appointment_id}")
+                response.raise_for_status()
+                appointment = response.json()
+                
+                # Обновляем только дату, сохраняя время
+                current_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+                new_datetime = datetime.combine(date_obj.date(), current_time.time())
+                
+                # Обновляем запись
+                update_data = {
+                    "scheduled_time": new_datetime.isoformat()
+                }
+                
+                response = await client.patch(f"{API_URL}/appointments/{appointment_id}", json=update_data)
+                response.raise_for_status()
+                
+                await message.answer("✅ Дата успешно обновлена")
+                await state.clear()
+                
+                # Показываем обновленную информацию о записи
+                message_text, keyboard = await get_appointment_info(appointment_id)
+                await message.answer(message_text, reply_markup=keyboard)
+                
+        elif field == "time":
+            # Парсим время
+            try:
+                time_obj = datetime.strptime(message.text.strip(), "%H:%M")
+            except ValueError:
+                await message.answer("❌ Неверный формат времени. Используйте формат ЧЧ:ММ")
+                return
+                
+            # Получаем текущую запись
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{API_URL}/appointments/{appointment_id}")
+                response.raise_for_status()
+                appointment = response.json()
+                
+                # Обновляем только время, сохраняя дату
+                current_datetime = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+                new_datetime = datetime.combine(current_datetime.date(), time_obj.time())
+                
+                # Обновляем запись
+                update_data = {
+                    "scheduled_time": new_datetime.isoformat()
+                }
+                
+                response = await client.patch(f"{API_URL}/appointments/{appointment_id}", json=update_data)
+                response.raise_for_status()
+                
+                await message.answer("✅ Время успешно обновлено")
+                await state.clear()
+                
+                # Показываем обновленную информацию о записи
+                message_text, keyboard = await get_appointment_info(appointment_id)
+                await message.answer(message_text, reply_markup=keyboard)
+                
+        elif field == "status":
+            # Проверяем валидность статуса
+            status = message.text.strip().lower()
+            valid_statuses = ["pending", "confirmed", "completed", "cancelled"]
+            
+            if status not in valid_statuses:
+                await message.answer("❌ Неверный статус. Допустимые значения: pending, confirmed, completed, cancelled")
+                return
+                
+            # Обновляем статус
+            async with httpx.AsyncClient() as client:
+                update_data = {
+                    "status": status
+                }
+                
+                response = await client.patch(f"{API_URL}/appointments/{appointment_id}", json=update_data)
+                response.raise_for_status()
+                
+                await message.answer("✅ Статус успешно обновлен")
+                await state.clear()
+                
+                # Показываем обновленную информацию о записи
+                message_text, keyboard = await get_appointment_info(appointment_id)
+                await message.answer(message_text, reply_markup=keyboard)
+                
+        elif field == "car_model":
+            # Обновляем модель автомобиля
+            async with httpx.AsyncClient() as client:
+                update_data = {
+                    "car_model": message.text.strip()
+                }
+                
+                response = await client.patch(f"{API_URL}/appointments/{appointment_id}", json=update_data)
+                response.raise_for_status()
+                
+                await message.answer("✅ Модель автомобиля успешно обновлена")
+                await state.clear()
+                
+                # Показываем обновленную информацию о записи
+                message_text, keyboard = await get_appointment_info(appointment_id)
+                await message.answer(message_text, reply_markup=keyboard)
+                
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении {field}: {e}")
+        await message.answer(f"❌ Произошла ошибка при обновлении {field}") 

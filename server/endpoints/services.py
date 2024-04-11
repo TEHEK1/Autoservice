@@ -7,7 +7,7 @@ from fastapi_cache.decorator import cache
 from sqlalchemy.orm import Session
 
 from server.database import get_db
-from server.models import Service, ServiceCreate, ServiceOut
+from server.models import Service, ServiceCreate, ServiceOut, ServiceUpdate
 
 router = APIRouter()
 
@@ -42,7 +42,7 @@ async def get_service(
 @router.patch("/{id}", response_model=ServiceOut)
 async def update_service(
         id: int,
-        update: ServiceCreate,
+        update: ServiceUpdate,
         db: Session = Depends(get_db)):
     to_update = db.query(Service).filter(Service.id == id).first()
     if not to_update:

@@ -1,22 +1,25 @@
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
-from fastapi.params import Depends
+from fastapi.params import Depends, Query
 from fastapi_cache import FastAPICache
 from fastapi_cache.decorator import cache
 from sqlalchemy.orm import Session
 
 from server.database import get_db
-from server.models import Appointment, AppointmentCreate, AppointmentOut
+from server.models import Appointment, AppointmentCreate, AppointmentOut, AppointmentUpdate
 
 router = APIRouter()
 
 @router.get("", response_model=List[AppointmentOut])
 @cache(expire=600, namespace="appointments")
-async def get_appointments(db: Session = Depends(get_db)):
+async def get_appointments(client_id: Optional[int] = Query(default=None),
+                           db: Session = Depends(get_db)):
     print("Берем не из кеша")
-    result = db.query(Appointment).all()
-    return result
+    query = db.query(Appointment)
+    if client_id is not None:
+        query = query.filter(Appointment.client_id == client_id)
+    return query.all()
 
 @router.get("/{id}", response_model=AppointmentOut)
 @cache(expire=600, namespace="appointments")
@@ -30,7 +33,7 @@ async def get_appointment(id: int,
 @router.patch("/{id}", response_model=AppointmentOut)
 async def patch_appointments(
         id: int,
-        update: AppointmentCreate,
+        update: AppointmentUpdate,
         db: Session = Depends(get_db)):
     to_update = db.query(Appointment).filter(Appointment.id == id).first()
     if not to_update:

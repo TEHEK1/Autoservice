@@ -5,7 +5,9 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, C
 from aiogram.filters.callback_data import CallbackData
 import httpx
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+import calendar
+from typing import List, Dict, Optional
 
 from aiogram.fsm.state import StatesGroup, State
 
@@ -28,36 +30,41 @@ class RegistrationCallback(CallbackData, prefix="registration"):
 
 @router.message(Command("start"))
 async def command_start(message: Message, state: FSMContext):
-    """Начало регистрации клиента"""
-    # Проверяем, зарегистрирован ли уже клиент
+    """Обработчик команды /start"""
     try:
+        # Проверяем, есть ли пользователь в базе данных
         async with httpx.AsyncClient() as client:
-            # Проверяем, есть ли клиент с таким telegram_id
-            response = await client.get(f"{API_URL}/clients")
-            response.raise_for_status()
-            clients = response.json()
-            
-            # Ищем клиента с таким telegram_id
-            for client_data in clients:
-                if client_data.get('telegram_id') == str(message.from_user.id):
-                    # Клиент уже зарегистрирован
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="📅 Мои записи", callback_data="my_appointments")],
-                        [InlineKeyboardButton(text="➕ Записаться на услугу", callback_data="create_appointment")]
-                    ])
-                    await message.answer(
-                        f"С возвращением, {client_data['name']}!\n\n"
-                        f"Выберите действие:",
-                        reply_markup=keyboard
-                    )
-                    return
-            
-            # Если клиент не найден, начинаем регистрацию
-            await state.set_state(ClientRegistrationState.waiting_for_name)
-            await message.answer(
-                "Добро пожаловать в сервис записи на обслуживание автомобиля!\n\n"
-                "Для начала регистрации, пожалуйста, введите ваше имя:"
+            response = await client.get(
+                f"{API_URL}/clients/search",
+                params={"telegram_id": message.from_user.id}
             )
+            
+            if response.status_code == 200:
+                # Пользователь уже зарегистрирован
+                client_data = response.json()
+                await message.answer(
+                    f"Добро пожаловать, {client_data['name']}!\n"
+                    f"Ваш номер телефона: {client_data['phone_number']}\n\n"
+                    "Выберите действие:",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="📝 Записаться", callback_data="create_appointment")],
+                        [InlineKeyboardButton(text="📋 Мои записи", callback_data="my_appointments")]
+                    ])
+                )
+                return
+            
+            # Если пользователь не найден, начинаем регистрацию
+            await message.answer("Добро пожаловать! Для начала работы нужно зарегистрироваться.\nВведите ваше имя:")
+            await state.set_state(ClientRegistrationState.waiting_for_name)
+            
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            # Пользователь не найден, начинаем регистрацию
+            await message.answer("Добро пожаловать! Для начала работы нужно зарегистрироваться.\nВведите ваше имя:")
+            await state.set_state(ClientRegistrationState.waiting_for_name)
+        else:
+            logger.error(f"Ошибка при проверке регистрации клиента: {e}")
+            await message.answer("❌ Произошла ошибка при проверке регистрации. Пожалуйста, попробуйте позже.")
     except Exception as e:
         logger.error(f"Ошибка при проверке регистрации клиента: {e}")
         await message.answer("❌ Произошла ошибка при проверке регистрации. Пожалуйста, попробуйте позже.")
@@ -125,7 +132,7 @@ async def process_car(message: Message, state: FSMContext):
                 "name": user_data['name'],
                 "phone_number": user_data['phone'],
                 "car_model": car_model,
-                "telegram_id": str(message.from_user.id)
+                "telegram_id": message.from_user.id
             }
             
             response = await client.post(f"{API_URL}/clients", json=client_data)

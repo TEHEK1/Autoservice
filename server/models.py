@@ -22,6 +22,11 @@ class ServiceCreate(BaseModel):
     description: Optional[str] = None
     price: float
 
+class ServiceUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = None
+
 class ServiceOut(ServiceCreate):
     id: int
     model_config = {"from_attributes": True}
@@ -38,6 +43,11 @@ class Client(Base):
 
 class ClientCreate(BaseModel):
     name: str
+    phone_number: Optional[str] = None
+    telegram_id: Optional[int] = None
+
+class ClientUpdate(BaseModel):
+    name: Optional[str] = None
     phone_number: Optional[str] = None
     telegram_id: Optional[int] = None
 

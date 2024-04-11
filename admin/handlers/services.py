@@ -84,21 +84,14 @@ async def process_create_service_callback(callback: types.CallbackQuery, state: 
     await state.set_state(CreateServiceState.waiting_for_name)
     await callback.answer()
 
-@router.callback_query(ServiceCallback.filter(F.action == "view"))
-async def process_service_selection(callback: CallbackQuery, callback_data: ServiceCallback):
-    """Обработка выбора услуги"""
+async def get_service_info(service_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Получение информации об услуге"""
     try:
-        service_id = callback_data.id
-        logger.info(f"Получаем информацию об услуге {service_id}")
-        
         async with httpx.AsyncClient() as http_client:
-            # Получаем информацию об услуге
             response = await http_client.get(f"{API_URL}/services/{service_id}")
             response.raise_for_status()
             service = response.json()
-            logger.info(f"Получена услуга: {service}")
             
-            # Создаем клавиатуру с кнопками управления
             buttons = [
                 [
                     InlineKeyboardButton(
@@ -128,22 +121,34 @@ async def process_service_selection(callback: CallbackQuery, callback_data: Serv
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
             
-            # Формируем сообщение с информацией об услуге
-            message = (
+            message_text = (
                 f"🔧 Услуга #{service_id}\n\n"
                 f"📝 Название: {service['name']}\n"
                 f"📋 Описание: {service.get('description', 'Не указано')}\n"
                 f"💰 Стоимость: {service['price']} руб.\n"
             )
             
-            await callback.message.edit_text(message, reply_markup=keyboard)
-            await callback.answer()
+            return message_text, keyboard
+            
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации об услуге: {e}")
+        raise
+
+@router.callback_query(ServiceCallback.filter(F.action == "view"))
+async def process_service_selection(callback: CallbackQuery, callback_data: ServiceCallback):
+    """Обработка выбора услуги"""
+    try:
+        service_id = callback_data.id
+        logger.info(f"Получаем информацию об услуге {service_id}")
+        message_text, keyboard = await get_service_info(service_id)
+        await callback.message.answer(message_text, reply_markup=keyboard)
+        await callback.answer()
             
     except Exception as e:
         logger.error(f"Ошибка при просмотре услуги: {e}")
         await callback.answer("❌ Произошла ошибка при получении информации об услуге", show_alert=True)
 
-@router.callback_query(ServiceCallback.filter(F.action.in_(["edit_name", "edit_description", "edit_price", "delete"])))
+@router.callback_query(ServiceCallback.filter(F.action == "delete"))
 async def process_edit_service(callback: types.CallbackQuery, callback_data: ServiceCallback, state: FSMContext):
     """Обработка редактирования услуги"""
     service_id = callback_data.id
@@ -157,10 +162,10 @@ async def process_edit_service(callback: types.CallbackQuery, callback_data: Ser
             appointments = response.json()
             
             # Проверяем, есть ли записи с этой услугой
-            service_appointments = [a for a in appointments if a['service_id'] == service_id]
+            service_appointments = [a for a in appointments if a.get('service_id') == service_id]
             
             if service_appointments:
-                await callback.message.answer(
+                await callback.message.edit_text(
                     "❌ Невозможно удалить услугу, так как есть связанные записи.\n"
                     "Сначала удалите или измените эти записи."
                 )
@@ -169,29 +174,16 @@ async def process_edit_service(callback: types.CallbackQuery, callback_data: Ser
             # Если нет связанных записей, запрашиваем подтверждение
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_delete_service_{service_id}"),
-                    InlineKeyboardButton(text="❌ Нет", callback_data="cancel_delete")
+                    InlineKeyboardButton(text="✅ Да", callback_data=f"service:delete:confirm:{service_id}"),
+                    InlineKeyboardButton(text="❌ Нет", callback_data="service:delete:cancel")
                 ]
             ])
-            await callback.message.answer(
+            await callback.message.edit_text(
                 "⚠️ Вы уверены, что хотите удалить эту услугу?",
                 reply_markup=keyboard
             )
             await state.set_state(DeleteServiceState.waiting_for_confirmation)
             await state.update_data(service_id=service_id)
-    else:
-        # Для других действий устанавливаем соответствующее состояние
-        state_mapping = {
-            "edit_name": (EditServiceState.waiting_for_name, "Введите новое название услуги:"),
-            "edit_description": (EditServiceState.waiting_for_description, "Введите новое описание услуги:"),
-            "edit_price": (EditServiceState.waiting_for_price, "Введите новую стоимость услуги (только число):")
-        }
-        
-        if action in state_mapping:
-            state_class, message_text = state_mapping[action]
-            await state.set_state(state_class)
-            await state.update_data(service_id=service_id)
-            await callback.message.answer(message_text)
     
     await callback.answer()
 
@@ -201,41 +193,42 @@ async def back_to_services(callback: types.CallbackQuery):
     await command_services(callback.message)
     await callback.answer()
 
-@router.callback_query(lambda c: c.data == "cancel_delete")
-async def cancel_delete(callback: types.CallbackQuery, state: FSMContext):
-    """Отмена удаления"""
-    await state.clear()
-    await callback.message.answer("❌ Удаление отменено")
-    await callback.answer()
-
-@router.callback_query(lambda c: c.data.startswith("confirm_delete_service_"))
-async def confirm_delete_service(callback: types.CallbackQuery, state: FSMContext):
-    """Подтверждение удаления услуги"""
-    service_id = int(callback.data.split("_")[-1])
-    
+@router.callback_query(lambda c: c.data.startswith("service:delete:confirm:"))
+async def process_confirm_delete_service(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка подтверждения удаления услуги"""
     try:
+        service_id = int(callback.data.split(":")[-1])
         async with httpx.AsyncClient() as client:
+            # Удаляем услугу
             response = await client.delete(f"{API_URL}/services/{service_id}")
             response.raise_for_status()
             
-            await callback.message.answer("✅ Услуга успешно удалена")
-            await state.clear()
+            await callback.message.edit_text("✅ Услуга успешно удалена")
             
-            # Возвращаемся к списку услуг
+            # Показываем обновленный список услуг
             await command_services(callback.message)
+            
     except Exception as e:
         logger.error(f"Ошибка при удалении услуги: {e}")
-        await callback.message.answer("❌ Произошла ошибка при удалении услуги")
+        await callback.message.edit_text("❌ Произошла ошибка при удалении услуги")
     
+    await callback.answer()
+    await state.clear()
+
+@router.callback_query(lambda c: c.data == "service:delete:cancel")
+async def cancel_delete_service(callback: types.CallbackQuery, state: FSMContext):
+    """Отмена удаления услуги"""
+    await state.clear()
+    await callback.message.edit_text("❌ Удаление отменено")
     await callback.answer()
 
 @router.message(EditServiceState.waiting_for_name)
 async def process_edit_name(message: Message, state: FSMContext):
     """Обработка нового названия услуги"""
-    data = await state.get_data()
-    service_id = data.get('service_id')
-    
     try:
+        data = await state.get_data()
+        service_id = data.get('service_id')
+        
         async with httpx.AsyncClient() as client:
             response = await client.patch(
                 f"{API_URL}/services/{service_id}",
@@ -246,8 +239,8 @@ async def process_edit_name(message: Message, state: FSMContext):
             await message.answer("✅ Название услуги успешно обновлено")
             await state.clear()
             
-            # Возвращаемся к списку услуг
-            await command_services(message)
+            message_text, keyboard = await get_service_info(service_id)
+            await message.answer(message_text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка при обновлении названия услуги: {e}")
         await message.answer("❌ Произошла ошибка при обновлении названия услуги")
@@ -255,10 +248,10 @@ async def process_edit_name(message: Message, state: FSMContext):
 @router.message(EditServiceState.waiting_for_description)
 async def process_edit_description(message: Message, state: FSMContext):
     """Обработка нового описания услуги"""
-    data = await state.get_data()
-    service_id = data.get('service_id')
-    
     try:
+        data = await state.get_data()
+        service_id = data.get('service_id')
+        
         async with httpx.AsyncClient() as client:
             response = await client.patch(
                 f"{API_URL}/services/{service_id}",
@@ -269,8 +262,8 @@ async def process_edit_description(message: Message, state: FSMContext):
             await message.answer("✅ Описание услуги успешно обновлено")
             await state.clear()
             
-            # Возвращаемся к списку услуг
-            await command_services(message)
+            message_text, keyboard = await get_service_info(service_id)
+            await message.answer(message_text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка при обновлении описания услуги: {e}")
         await message.answer("❌ Произошла ошибка при обновлении описания услуги")
@@ -294,7 +287,8 @@ async def process_edit_price(message: Message, state: FSMContext):
             await state.clear()
             
             # Возвращаемся к списку услуг
-            await command_services(message)
+            message_text, keyboard = await get_service_info(service_id)
+            await message.answer(message_text, reply_markup=keyboard)
     except ValueError:
         await message.answer("❌ Пожалуйста, введите корректное число")
     except Exception as e:

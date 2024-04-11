@@ -27,8 +27,13 @@ class AppointmentState(StatesGroup):
 
 # Callback данные для записей
 class AppointmentCallback(CallbackData, prefix="appointment"):
+    id: int
     action: str
     value: Optional[str] = None
+
+# Callback данные для выбора услуги
+class SelectServiceCallback(CallbackData, prefix="select_service"):
+    id: int
 
 # Рабочие часы сервиса (можно вынести в конфиг)
 WORKING_HOURS = {
@@ -39,6 +44,12 @@ WORKING_HOURS = {
 
 # Дни недели, когда сервис работает (0 = понедельник, 6 = воскресенье)
 WORKING_DAYS = [0, 1, 2, 3, 4, 5]  # с понедельника по субботу
+
+class CreateAppointmentState(StatesGroup):
+    waiting_for_car = State()
+    waiting_for_service = State()
+    waiting_for_date = State()
+    waiting_for_time = State()
 
 @router.message(Command("create_appointment"))
 async def command_create_appointment(message: Message, state: FSMContext):
@@ -74,39 +85,105 @@ async def command_create_appointment(message: Message, state: FSMContext):
         await message.answer("❌ Произошла ошибка при получении списка услуг. Пожалуйста, попробуйте позже.")
 
 @router.callback_query(lambda c: c.data == "create_appointment")
-async def create_appointment(callback: CallbackQuery, state: FSMContext):
-    """Начало процесса создания записи"""
+async def process_create_appointment(callback: CallbackQuery, state: FSMContext):
+    """Начало создания записи"""
+    await callback.message.answer("Введите модель автомобиля:")
+    await state.set_state(CreateAppointmentState.waiting_for_car)
+    await callback.answer()
+
+@router.message(CreateAppointmentState.waiting_for_car)
+async def process_create_car(message: Message, state: FSMContext):
+    """Обработка ввода модели автомобиля"""
+    await state.update_data(car_model=message.text.strip())
+    
     try:
-        # Получаем список доступных услуг
         async with httpx.AsyncClient() as client:
             response = await client.get(f"{API_URL}/services")
             response.raise_for_status()
             services = response.json()
             
-            # Создаем клавиатуру с услугами
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text=f"{service['name']} - {service['price']}₽",
-                    callback_data=AppointmentCallback(action="select_service", value=str(service['id'])).pack()
-                )] for service in services
-            ])
+            if not services:
+                await message.answer("❌ Нет доступных услуг. Пожалуйста, обратитесь к администратору.")
+                await state.clear()
+                return
             
-            # Добавляем кнопку возврата в главное меню
-            keyboard.inline_keyboard.append([
-                InlineKeyboardButton(text="◀️ Назад", callback_data="main_menu")
-            ])
+            buttons = []
+            for service in services:
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=f"{service['name']} - {service['price']} руб.",
+                        callback_data=SelectServiceCallback(id=service['id']).pack()
+                    )
+                ])
             
-            await callback.message.edit_text(
-                "Выберите услугу:",
-                reply_markup=keyboard
-            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            await message.answer("Выберите услугу:", reply_markup=keyboard)
+            await state.set_state(CreateAppointmentState.waiting_for_service)
             
-            await state.set_state(AppointmentState.waiting_for_service)
-            await callback.answer()
     except Exception as e:
         logger.error(f"Ошибка при получении списка услуг: {e}")
-        await callback.message.answer("❌ Произошла ошибка при получении списка услуг. Пожалуйста, попробуйте позже.")
-        await callback.answer()
+        await message.answer("❌ Произошла ошибка при получении списка услуг")
+        await state.clear()
+
+@router.callback_query(SelectServiceCallback.filter(), CreateAppointmentState.waiting_for_service)
+async def process_service_selection(callback: CallbackQuery, callback_data: SelectServiceCallback, state: FSMContext):
+    """Обработка выбора услуги"""
+    await state.update_data(service_id=callback_data.id)
+    await callback.message.answer("Введите дату в формате ДД.ММ.ГГГГ:")
+    await state.set_state(CreateAppointmentState.waiting_for_date)
+    await callback.answer()
+
+@router.message(CreateAppointmentState.waiting_for_date)
+async def process_create_date(message: Message, state: FSMContext):
+    """Обработка ввода даты"""
+    try:
+        date = datetime.strptime(message.text.strip(), "%d.%m.%Y")
+        await state.update_data(date=date.strftime("%Y-%m-%d"))
+        await message.answer("Введите время в формате ЧЧ:ММ:")
+        await state.set_state(CreateAppointmentState.waiting_for_time)
+    except ValueError:
+        await message.answer("❌ Неверный формат даты. Введите дату в формате ДД.ММ.ГГГГ:")
+
+@router.message(CreateAppointmentState.waiting_for_time)
+async def process_create_time(message: Message, state: FSMContext):
+    """Обработка ввода времени"""
+    try:
+        time = datetime.strptime(message.text.strip(), "%H:%M")
+        data = await state.get_data()
+        scheduled_time = f"{data['date']}T{time.strftime('%H:%M')}:00Z"
+        
+        # Получаем client_id
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{API_URL}/clients/search?telegram_id={message.from_user.id}")
+            if response.status_code != 200:
+                raise Exception("Клиент не найден")
+            client_data = response.json()
+            
+            # Создаем запись
+            response = await client.post(
+                f"{API_URL}/appointments",
+                json={
+                    "client_id": client_data['id'],
+                    "service_id": data['service_id'],
+                    "car_model": data['car_model'],
+                    "scheduled_time": scheduled_time,
+                    "status": "pending"
+                }
+            )
+            response.raise_for_status()
+            
+            await message.answer("✅ Запись успешно создана")
+            await state.clear()
+            
+            # Возвращаемся к списку записей
+            await command_appointments(message)
+            
+    except ValueError:
+        await message.answer("❌ Неверный формат времени. Введите время в формате ЧЧ:ММ:")
+    except Exception as e:
+        logger.error(f"Ошибка при создании записи: {e}")
+        await message.answer("❌ Произошла ошибка при создании записи")
+        await state.clear()
 
 @router.callback_query(AppointmentCallback.filter(F.action == "select_service"))
 async def select_service(callback: CallbackQuery, state: FSMContext, callback_data: AppointmentCallback):
@@ -321,76 +398,213 @@ async def confirm_appointment(callback: CallbackQuery, state: FSMContext, callba
         await state.clear()
         await callback.answer()
 
-@router.callback_query(lambda c: c.data == "my_appointments")
-async def show_my_appointments(callback: CallbackQuery):
-    """Показ записей клиента"""
+async def get_appointments_list(telegram_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Получение списка записей клиента"""
     try:
-        # Получаем список записей
         async with httpx.AsyncClient() as client:
             # Получаем клиента по telegram_id
             client_response = await client.get(
                 f"{API_URL}/clients/search",
-                params={"telegram_id": str(callback.from_user.id)}
+                params={"telegram_id": str(telegram_id)}
             )
             client_response.raise_for_status()
             current_client = client_response.json()
             
             if not current_client:
-                await callback.message.edit_text("❌ Ошибка: клиент не найден. Пожалуйста, зарегистрируйтесь.")
-                return
+                return "❌ Ошибка: клиент не найден. Пожалуйста, зарегистрируйтесь.", None
             
-            # Получаем записи клиента
-            appointments_response = await client.get(f"{API_URL}/appointments")
+            # Получаем записи клиента через фильтр
+            appointments_response = await client.get(
+                f"{API_URL}/appointments",
+                params={"client_id": current_client['id']}
+            )
             appointments_response.raise_for_status()
-            all_appointments = appointments_response.json()
+            appointments = appointments_response.json()
             
-            # Фильтруем записи текущего клиента
-            client_appointments = [a for a in all_appointments if a['client_id'] == current_client['id']]
-            
-            if not client_appointments:
+            if not appointments:
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="➕ Записаться на услугу", callback_data="create_appointment")],
-                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+                    [InlineKeyboardButton(text="➕ Создать запись", callback_data="create_appointment")]
                 ])
-                
-                await callback.message.edit_text(
-                    "У вас пока нет записей.\n"
-                    "Хотите записаться на услугу?",
-                    reply_markup=keyboard
-                )
-                return
+                return "📝 Нет доступных записей", keyboard
             
             # Сортируем записи по дате
-            client_appointments.sort(key=lambda x: datetime.fromisoformat(x['scheduled_time'].replace('Z', '+00:00')))
+            appointments.sort(key=lambda x: datetime.fromisoformat(x['scheduled_time'].replace('Z', '+00:00')))
             
             # Получаем информацию об услугах
             services_response = await client.get(f"{API_URL}/services")
             services_response.raise_for_status()
             services = {s['id']: s for s in services_response.json()}
             
-            # Формируем сообщение с записями
-            message_text = "📅 Ваши записи:\n\n"
-            
-            for appointment in client_appointments:
+            # Создаем кнопки для каждой записи
+            buttons = []
+            for appointment in appointments:
                 service = services[appointment['service_id']]
-                appointment_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+                scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+                formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
                 
-                message_text += (
-                    f"🔹 {appointment_time.strftime('%d.%m.%Y %H:%M')}\n"
-                    f"   Услуга: {service['name']}\n"
-                    f"   Статус: {appointment['status']}\n"
-                    f"   Стоимость: {service['price']}₽\n\n"
-                )
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=f"{formatted_time} - {service['name']}",
+                        callback_data=AppointmentCallback(id=appointment['id'], action="view").pack()
+                    )
+                ])
             
-            # Создаем клавиатуру
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="➕ Новая запись", callback_data="create_appointment")],
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
+            buttons.extend([
+                [InlineKeyboardButton(text="➕ Создать запись", callback_data="create_appointment")],
+                [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")]
             ])
             
-            await callback.message.edit_text(message_text, reply_markup=keyboard)
-            await callback.answer()
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            return "📝 Список записей:", keyboard
+            
     except Exception as e:
-        logger.error(f"Ошибка при получении записей: {e}")
-        await callback.message.edit_text("❌ Произошла ошибка при получении записей. Пожалуйста, попробуйте позже.")
-        await callback.answer() 
+        logger.error(f"Ошибка при получении списка записей: {e}")
+        return "❌ Произошла ошибка при получении списка записей", None
+
+@router.message(Command("appointments"))
+async def command_appointments(message: Message):
+    """Показать список записей"""
+    message_text, keyboard = await get_appointments_list(message.from_user.id)
+    if keyboard:
+        await message.answer(message_text, reply_markup=keyboard)
+    else:
+        await message.answer(message_text)
+
+@router.callback_query(F.data == "my_appointments")
+async def show_my_appointments(callback: CallbackQuery):
+    """Показ записей клиента"""
+    message_text, keyboard = await get_appointments_list(callback.from_user.id)
+    if keyboard:
+        await callback.message.edit_text(message_text, reply_markup=keyboard)
+    else:
+        await callback.message.edit_text(message_text)
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data == "back_to_appointments")
+async def back_to_appointments(callback: types.CallbackQuery):
+    """Возврат к списку записей"""
+    message_text, keyboard = await get_appointments_list(callback.from_user.id)
+    if keyboard:
+        await callback.message.edit_text(message_text, reply_markup=keyboard)
+    else:
+        await callback.message.edit_text(message_text)
+    await callback.answer()
+
+async def get_appointment_info(appointment_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Получение информации о записи"""
+    try:
+        async with httpx.AsyncClient() as http_client:
+            # Получаем информацию о записи
+            response = await http_client.get(f"{API_URL}/appointments/{appointment_id}")
+            response.raise_for_status()
+            appointment = response.json()
+            logger.info(f"Получена запись: {appointment}")
+            
+            # Получаем информацию об услуге
+            try:
+                service_response = await http_client.get(f"{API_URL}/services/{appointment['service_id']}")
+                service_response.raise_for_status()
+                service = service_response.json()
+                logger.info(f"Получена услуга: {service}")
+                service_info = f"🔧 Услуга: {service['name']}\n💰 Стоимость: {service['price']} руб.\n"
+            except httpx.HTTPError:
+                logger.warning(f"Услуга с ID {appointment['service_id']} не найдена")
+                service_info = "🔧 Услуга: Не найдена\n"
+            
+            # Форматируем дату и время
+            scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+            formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
+            
+            # Создаем клавиатуру с кнопками управления
+            buttons = [
+                [
+                    InlineKeyboardButton(
+                        text="❌ Отменить запись",
+                        callback_data=AppointmentCallback(action="delete", id=appointment_id).pack()
+                    )
+                ],
+                [
+                    InlineKeyboardButton(text="◀️ Назад к списку", callback_data="back_to_appointments"),
+                    InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")
+                ]
+            ]
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            
+            # Формируем сообщение с информацией о записи
+            message = (
+                f"📝 Запись #{appointment_id}\n\n"
+                f"🚗 Автомобиль: {appointment.get('car_model', 'Не указан')}\n"
+                f"{service_info}"
+                f"📅 Дата и время: {formatted_time}\n"
+                f"📊 Статус: {appointment.get('status', 'Не указан')}\n"
+            )
+            
+            return message, keyboard
+            
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о записи: {e}")
+        raise
+
+@router.callback_query(AppointmentCallback.filter(F.action == "view"))
+async def process_appointment_selection(callback: CallbackQuery, callback_data: AppointmentCallback):
+    """Обработка выбора записи"""
+    try:
+        appointment_id = callback_data.id
+        logger.info(f"Получаем информацию о записи {appointment_id}")
+        
+        # Получаем информацию о записи
+        message_text, keyboard = await get_appointment_info(appointment_id)
+        await callback.message.edit_text(message_text, reply_markup=keyboard)
+        await callback.answer()
+            
+    except Exception as e:
+        logger.error(f"Ошибка при просмотре записи: {e}")
+        await callback.answer("❌ Произошла ошибка при получении информации о записи", show_alert=True)
+
+@router.callback_query(AppointmentCallback.filter(F.action == "delete"))
+async def process_delete(callback: types.CallbackQuery, callback_data: AppointmentCallback, state: FSMContext):
+    """Обработка удаления записи"""
+    try:
+        appointment_id = callback_data.id
+        
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ Да, отменить",
+                        callback_data=AppointmentCallback(id=appointment_id, action="confirm_delete").pack()
+                    ),
+                    InlineKeyboardButton(
+                        text="❌ Нет, оставить",
+                        callback_data=AppointmentCallback(id=appointment_id, action="view").pack()
+                    )
+                ]
+            ]
+        )
+        await callback.message.edit_text("Вы уверены, что хотите отменить эту запись?", reply_markup=keyboard)
+        await callback.answer()
+            
+    except Exception as e:
+        logger.error(f"Ошибка при удалении записи: {e}")
+        await callback.answer("❌ Произошла ошибка при удалении записи", show_alert=True)
+
+@router.callback_query(AppointmentCallback.filter(F.action == "confirm_delete"))
+async def confirm_delete(callback: types.CallbackQuery, callback_data: AppointmentCallback):
+    """Подтверждение удаления записи"""
+    try:
+        appointment_id = callback_data.id
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(f"{API_URL}/appointments/{appointment_id}")
+            response.raise_for_status()
+            
+            await callback.message.edit_text("✅ Запись успешно отменена")
+            await callback.answer()
+            
+            # Возвращаемся к списку записей
+            await command_appointments(callback.message)
+            
+    except Exception as e:
+        logger.error(f"Ошибка при удалении записи: {e}")
+        await callback.answer("❌ Произошла ошибка при удалении записи", show_alert=True) 

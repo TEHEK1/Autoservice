@@ -13,24 +13,10 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Создаем общий роутер для главного меню
-main_router = Router()
-
-@main_router.callback_query(lambda c: c.data == "main_menu")
-async def main_menu(callback: types.CallbackQuery):
-    """Возврат в главное меню"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Мои записи", callback_data="my_appointments")],
-        [InlineKeyboardButton(text="➕ Записаться на услугу", callback_data="create_appointment")]
-    ])
-    await callback.message.edit_text("🏠 Главное меню", reply_markup=keyboard)
-    await callback.answer()
-
 # Регистрация всех роутеров
-dp.include_router(main_router)
-
-# Импортируем и регистрируем остальные роутеры после создания основного
-from .handlers import registration, appointments
+from .handlers import main_menu, registration, appointments, profile
+dp.include_router(main_menu.router)
+dp.include_router(profile.router)
 dp.include_router(registration.router)
 dp.include_router(appointments.router)
 

@@ -1,6 +1,4 @@
-from aiogram import Bot, Dispatcher, types, Router
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import Bot, Dispatcher
 import asyncio
 import logging
 from .config import TOKEN
@@ -13,35 +11,9 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Создаем общий роутер для главного меню
-main_router = Router()
-
-@main_router.message(Command("start"))
-async def command_start(message: types.Message):
-    """Обработчик команды /start"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Записи", callback_data="appointments")],
-        [InlineKeyboardButton(text="👤 Клиенты", callback_data="clients")],
-        [InlineKeyboardButton(text="🔧 Услуги", callback_data="services")]
-    ])
-    await message.answer("🏠 Главное меню", reply_markup=keyboard)
-
-@main_router.callback_query(lambda c: c.data == "main_menu")
-async def main_menu(callback: types.CallbackQuery):
-    """Возврат в главное меню"""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Записи", callback_data="appointments")],
-        [InlineKeyboardButton(text="👤 Клиенты", callback_data="clients")],
-        [InlineKeyboardButton(text="🔧 Услуги", callback_data="services")]
-    ])
-    await callback.message.edit_text("🏠 Главное меню", reply_markup=keyboard)
-    await callback.answer()
-
 # Регистрация всех роутеров
-dp.include_router(main_router)
-
-# Импортируем и регистрируем остальные роутеры после создания основного
-from .handlers import appointments, clients, services
+from .handlers import main_menu, appointments, clients, services
+dp.include_router(main_menu.router)
 dp.include_router(appointments.router)
 dp.include_router(clients.router)
 dp.include_router(services.router)

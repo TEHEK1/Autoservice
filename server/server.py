@@ -23,7 +23,7 @@ def my_custom_key_builder(
     kwargs=None
 ) -> str:
     print(f"namespace = '{namespace}'")
-    raw_key = f"{namespace}:{func.__name__}:{request.query_params}"
+    raw_key = f"{namespace}:{func.__name__}:{request.url}"
     hashed = hashlib.md5(raw_key.encode()).hexdigest()
     return f"{raw_key}"
 

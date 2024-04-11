@@ -1,5 +1,5 @@
 from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters.callback_data import CallbackData
@@ -38,67 +38,14 @@ class EditClientCallback(CallbackData, prefix="client"):
     id: int
     field: str
 
-@router.message(Command("clients"))
-async def command_clients(message: Message):
-    """Показать список клиентов"""
+async def get_client_info(client_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Получение информации о клиенте"""
     try:
-        async with httpx.AsyncClient() as client:
-            # Получаем список клиентов
-            response = await client.get(f"{API_URL}/clients")
-            response.raise_for_status()
-            clients = response.json()
-            
-            if not clients:
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="➕ Создать клиента", callback_data="create_client")]
-                ])
-                await message.answer("👤 Нет доступных клиентов", reply_markup=keyboard)
-                return
-            
-            # Создаем кнопки для каждого клиента
-            buttons = []
-            for client in clients:
-                buttons.append([
-                    InlineKeyboardButton(
-                        text=f"{client['name']} - {client['phone_number']}",
-                        callback_data=ClientCallback(id=client['id'], action="view").pack()
-                    )
-                ])
-            
-            # Добавляем кнопки управления
-            buttons.extend([
-                [InlineKeyboardButton(text="➕ Создать клиента", callback_data="create_client")],
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
-            ])
-            
-            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-            await message.answer("👤 Список клиентов:", reply_markup=keyboard)
-            
-    except Exception as e:
-        logger.error(f"Ошибка при получении списка клиентов: {e}")
-        await message.answer("❌ Произошла ошибка при получении списка клиентов")
-
-@router.callback_query(lambda c: c.data == "create_client")
-async def process_create_client_callback(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Введите имя клиента:")
-    await state.set_state(CreateClientState.waiting_for_name)
-    await callback.answer()
-
-@router.callback_query(ClientCallback.filter(F.action == "view"))
-async def process_client_selection(callback: CallbackQuery, callback_data: ClientCallback):
-    """Обработка выбора клиента"""
-    try:
-        client_id = callback_data.id
-        logger.info(f"Получаем информацию о клиенте {client_id}")
-        
         async with httpx.AsyncClient() as http_client:
-            # Получаем информацию о клиенте
-            response = await http_client.get(f"{API_URL}/clients/{client_id}")
+            response = await http_client.get(f"http://localhost:8000/clients/{client_id}")
             response.raise_for_status()
             client = response.json()
-            logger.info(f"Получен клиент: {client}")
             
-            # Создаем клавиатуру с кнопками управления
             buttons = [
                 [
                     InlineKeyboardButton(
@@ -106,15 +53,11 @@ async def process_client_selection(callback: CallbackQuery, callback_data: Clien
                         callback_data=ClientCallback(action="edit_name", id=client_id).pack()
                     ),
                     InlineKeyboardButton(
-                        text="📱 Изменить телефон",
+                        text="📝 Изменить телефон",
                         callback_data=ClientCallback(action="edit_phone", id=client_id).pack()
                     )
                 ],
                 [
-                    InlineKeyboardButton(
-                        text="🚗 Изменить автомобиль",
-                        callback_data=ClientCallback(action="edit_car", id=client_id).pack()
-                    ),
                     InlineKeyboardButton(
                         text="❌ Удалить клиента",
                         callback_data=ClientCallback(action="delete", id=client_id).pack()
@@ -128,31 +71,152 @@ async def process_client_selection(callback: CallbackQuery, callback_data: Clien
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
             
-            # Формируем сообщение с информацией о клиенте
-            message = (
+            message_text = (
                 f"👤 Клиент #{client_id}\n\n"
                 f"📝 Имя: {client['name']}\n"
                 f"📱 Телефон: {client['phone_number']}\n"
-                f"🚗 Автомобиль: {client.get('car_model', 'Не указан')}\n"
             )
             
-            await callback.message.edit_text(message, reply_markup=keyboard)
-            await callback.answer()
+            return message_text, keyboard
+            
+    except Exception as e:
+        logger.error(f"Ошибка при получении информации о клиенте: {e}")
+        raise
+
+@router.message(Command("clients"))
+async def command_clients(message: Message):
+    """Показать список клиентов"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{API_URL}/clients")
+            response.raise_for_status()
+            clients = response.json()
+            
+            if not clients:
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="➕ Создать клиента", callback_data="create_client")]
+                ])
+                await message.answer("👤 Нет доступных клиентов", reply_markup=keyboard)
+                return
+            
+            buttons = []
+            for client in clients:
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=f"{client['name']} - {client['phone_number']}",
+                        callback_data=ClientCallback(id=client['id'], action="view").pack()
+                    )
+                ])
+            
+            buttons.extend([
+                [InlineKeyboardButton(text="➕ Создать клиента", callback_data="create_client")],
+                [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")]
+            ])
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            await message.answer("👤 Список клиентов:", reply_markup=keyboard)
+            
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка клиентов: {e}")
+        await message.answer("❌ Произошла ошибка при получении списка клиентов")
+
+@router.callback_query(ClientCallback.filter(F.action == "edit_name"))
+async def process_edit_name(callback: CallbackQuery, callback_data: ClientCallback, state: FSMContext):
+    """Обработка изменения имени клиента"""
+    try:
+        client_id = callback_data.id
+        await state.set_state("editing_name")
+        await state.update_data(client_id=client_id)
+        await callback.message.answer("Введите новое имя клиента:")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при начале редактирования имени: {e}")
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+@router.message(StateFilter("editing_name"))
+async def process_name_edit(message: Message, state: FSMContext):
+    """Обработка нового имени клиента"""
+    try:
+        data = await state.get_data()
+        client_id = data.get('client_id')
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"http://localhost:8000/clients/{client_id}",
+                json={"name": message.text.strip()}
+            )
+            response.raise_for_status()
+            
+            await message.answer("✅ Имя клиента успешно обновлено")
+            await state.clear()
+            
+            message_text, keyboard = await get_client_info(client_id)
+            await message.answer(message_text, reply_markup=keyboard)
+    except Exception as e:
+        logger.error(f"Ошибка при обновлении имени клиента: {e}")
+        await message.answer("❌ Произошла ошибка при обновлении имени клиента")
+
+@router.callback_query(lambda c: c.data == "create_client")
+async def process_create_client(callback: CallbackQuery, state: FSMContext):
+    """Обработка создания клиента"""
+    await callback.message.answer("Введите имя клиента:")
+    await state.set_state("creating_name")
+    await callback.answer()
+
+@router.message(StateFilter("creating_name"))
+async def process_create_name(message: Message, state: FSMContext):
+    """Обработка имени нового клиента"""
+    await state.update_data(name=message.text.strip())
+    await message.answer("Введите номер телефона клиента:")
+    await state.set_state("creating_phone")
+
+@router.message(StateFilter("creating_phone"))
+async def process_create_phone(message: Message, state: FSMContext):
+    """Обработка телефона нового клиента"""
+    try:
+        data = await state.get_data()
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "http://localhost:8000/clients",
+                json={
+                    "name": data['name'],
+                    "phone_number": message.text.strip()
+                }
+            )
+            response.raise_for_status()
+            
+            await message.answer("✅ Клиент успешно создан")
+            await state.clear()
+            
+            # Возвращаемся к списку клиентов
+            await command_clients(message)
+    except Exception as e:
+        logger.error(f"Ошибка при создании клиента: {e}")
+        await message.answer("❌ Произошла ошибка при создании клиента")
+
+@router.callback_query(ClientCallback.filter(F.action == "view"))
+async def process_client_selection(callback: CallbackQuery, callback_data: ClientCallback):
+    """Обработка выбора клиента"""
+    try:
+        client_id = callback_data.id
+        message_text, keyboard = await get_client_info(client_id)
+        await callback.message.answer(message_text, reply_markup=keyboard)
+        await callback.answer()
             
     except Exception as e:
         logger.error(f"Ошибка при просмотре клиента: {e}")
         await callback.answer("❌ Произошла ошибка при получении информации о клиенте", show_alert=True)
 
-@router.callback_query(ClientCallback.filter(F.action.in_(["edit_name", "edit_phone", "edit_car", "delete"])))
-async def process_edit_client(callback: types.CallbackQuery, callback_data: ClientCallback, state: FSMContext):
-    """Обработка редактирования клиента"""
-    client_id = callback_data.id
-    action = callback_data.action
-    
-    if action == "delete":
+@router.callback_query(ClientCallback.filter(F.action == "delete"))
+async def process_delete(callback: CallbackQuery, callback_data: ClientCallback, state: FSMContext):
+    """Обработка удаления клиента"""
+    try:
+        client_id = callback_data.id
+        
         # Проверяем, есть ли связанные записи
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{API_URL}/appointments")
+            response = await client.get("http://localhost:8000/appointments")
             response.raise_for_status()
             appointments = response.json()
             
@@ -169,7 +233,7 @@ async def process_edit_client(callback: types.CallbackQuery, callback_data: Clie
             # Если нет связанных записей, запрашиваем подтверждение
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_delete_client_{client_id}"),
+                    InlineKeyboardButton(text="✅ Да", callback_data=f"confirm_delete_{client_id}"),
                     InlineKeyboardButton(text="❌ Нет", callback_data="cancel_delete")
                 ]
             ])
@@ -177,23 +241,11 @@ async def process_edit_client(callback: types.CallbackQuery, callback_data: Clie
                 "⚠️ Вы уверены, что хотите удалить этого клиента?",
                 reply_markup=keyboard
             )
-            await state.set_state(DeleteClientState.waiting_for_confirmation)
+            await state.set_state("waiting_for_confirmation")
             await state.update_data(client_id=client_id)
-    else:
-        # Для других действий устанавливаем соответствующее состояние
-        state_mapping = {
-            "edit_name": (EditClientState.waiting_for_name, "Введите новое имя клиента:"),
-            "edit_phone": (EditClientState.waiting_for_phone, "Введите новый номер телефона клиента:"),
-            "edit_car": (EditClientState.waiting_for_car, "Введите новую модель автомобиля клиента:")
-        }
-        
-        if action in state_mapping:
-            state_class, message_text = state_mapping[action]
-            await state.set_state(state_class)
-            await state.update_data(client_id=client_id)
-            await callback.message.answer(message_text)
-    
-    await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при начале удаления клиента: {e}")
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
 
 @router.callback_query(lambda c: c.data == "back_to_clients")
 async def back_to_clients(callback: types.CallbackQuery):
@@ -208,7 +260,7 @@ async def cancel_delete(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("❌ Удаление отменено")
     await callback.answer()
 
-@router.callback_query(lambda c: c.data.startswith("confirm_delete_client_"))
+@router.callback_query(lambda c: c.data.startswith("confirm_delete_"))
 async def confirm_delete_client(callback: types.CallbackQuery, state: FSMContext):
     """Подтверждение удаления клиента"""
     client_id = int(callback.data.split("_")[-1])
@@ -229,111 +281,38 @@ async def confirm_delete_client(callback: types.CallbackQuery, state: FSMContext
     
     await callback.answer()
 
-@router.message(EditClientState.waiting_for_name)
-async def process_edit_name(message: Message, state: FSMContext):
-    """Обработка нового имени клиента"""
-    data = await state.get_data()
-    client_id = data.get('client_id')
-    
+@router.callback_query(ClientCallback.filter(F.action == "edit_phone"))
+async def process_edit_phone(callback: CallbackQuery, callback_data: ClientCallback, state: FSMContext):
+    """Обработка изменения телефона клиента"""
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.patch(
-                f"{API_URL}/clients/{client_id}",
-                json={"name": message.text}
-            )
-            response.raise_for_status()
-            
-            await message.answer("✅ Имя клиента успешно обновлено")
-            await state.clear()
-            
-            # Возвращаемся к списку клиентов
-            await command_clients(message)
+        client_id = callback_data.id
+        await state.set_state("editing_phone")
+        await state.update_data(client_id=client_id)
+        await callback.message.answer("Введите новый номер телефона клиента:")
+        await callback.answer()
     except Exception as e:
-        logger.error(f"Ошибка при обновлении имени клиента: {e}")
-        await message.answer("❌ Произошла ошибка при обновлении имени клиента")
+        logger.error(f"Ошибка при начале редактирования телефона: {e}")
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
 
-@router.message(EditClientState.waiting_for_phone)
-async def process_edit_phone(message: Message, state: FSMContext):
+@router.message(StateFilter("editing_phone"))
+async def process_phone_edit(message: Message, state: FSMContext):
     """Обработка нового телефона клиента"""
-    data = await state.get_data()
-    client_id = data.get('client_id')
-    
     try:
+        data = await state.get_data()
+        client_id = data.get('client_id')
+        
         async with httpx.AsyncClient() as client:
             response = await client.patch(
-                f"{API_URL}/clients/{client_id}",
-                json={"phone_number": message.text}
+                f"http://localhost:8000/clients/{client_id}",
+                json={"phone_number": message.text.strip()}
             )
             response.raise_for_status()
             
             await message.answer("✅ Телефон клиента успешно обновлен")
             await state.clear()
             
-            # Возвращаемся к списку клиентов
-            await command_clients(message)
+            message_text, keyboard = await get_client_info(client_id)
+            await message.answer(message_text, reply_markup=keyboard)
     except Exception as e:
         logger.error(f"Ошибка при обновлении телефона клиента: {e}")
-        await message.answer("❌ Произошла ошибка при обновлении телефона клиента")
-
-@router.message(EditClientState.waiting_for_car)
-async def process_edit_car(message: Message, state: FSMContext):
-    """Обработка новой модели автомобиля клиента"""
-    data = await state.get_data()
-    client_id = data.get('client_id')
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.patch(
-                f"{API_URL}/clients/{client_id}",
-                json={"car_model": message.text}
-            )
-            response.raise_for_status()
-            
-            await message.answer("✅ Модель автомобиля клиента успешно обновлена")
-            await state.clear()
-            
-            # Возвращаемся к списку клиентов
-            await command_clients(message)
-    except Exception as e:
-        logger.error(f"Ошибка при обновлении модели автомобиля клиента: {e}")
-        await message.answer("❌ Произошла ошибка при обновлении модели автомобиля клиента")
-
-@router.message(CreateClientState.waiting_for_name)
-async def process_create_name(message: Message, state: FSMContext):
-    """Обработка имени нового клиента"""
-    await state.update_data(name=message.text)
-    await message.answer("Введите номер телефона клиента:")
-    await state.set_state(CreateClientState.waiting_for_phone)
-
-@router.message(CreateClientState.waiting_for_phone)
-async def process_create_phone(message: Message, state: FSMContext):
-    """Обработка телефона нового клиента"""
-    await state.update_data(phone_number=message.text)
-    await message.answer("Введите модель автомобиля клиента:")
-    await state.set_state(CreateClientState.waiting_for_car)
-
-@router.message(CreateClientState.waiting_for_car)
-async def process_create_car(message: Message, state: FSMContext):
-    """Обработка модели автомобиля нового клиента"""
-    try:
-        data = await state.get_data()
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{API_URL}/clients",
-                json={
-                    "name": data['name'],
-                    "phone_number": data['phone_number'],
-                    "car_model": message.text
-                }
-            )
-            response.raise_for_status()
-            
-            await message.answer("✅ Клиент успешно создан")
-            await state.clear()
-            
-            # Возвращаемся к списку клиентов
-            await command_clients(message)
-    except Exception as e:
-        logger.error(f"Ошибка при создании клиента: {e}")
-        await message.answer("❌ Произошла ошибка при создании клиента") 
+        await message.answer("❌ Произошла ошибка при обновлении телефона клиента") 

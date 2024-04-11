@@ -7,7 +7,7 @@ from fastapi_cache.decorator import cache
 from sqlalchemy.orm import Session
 
 from server.database import get_db
-from server.models import Client, ClientCreate, ClientOut
+from server.models import Client, ClientCreate, ClientOut, ClientUpdate
 
 router = APIRouter()
 
@@ -16,16 +16,6 @@ router = APIRouter()
 async def get_clients(db: Session = Depends(get_db)):
     print("Берем не из кеша")
     result = db.query(Client).all()
-    return result
-
-@router.get("/{id}", response_model=ClientOut)
-@cache(expire=600, namespace="clients")
-async def get_client(
-        id: int,
-        db: Session = Depends(get_db)):
-    result = db.query(Client).filter(Client.id == id).first()
-    if not result:
-        raise HTTPException(status_code=404, detail="Client not found")
     return result
 
 @router.get("/search", response_model=ClientOut)
@@ -51,6 +41,16 @@ def search_client(
 
     return client
 
+@router.get("/{id}", response_model=ClientOut)
+@cache(expire=600, namespace="clients")
+async def get_client(
+        id: int,
+        db: Session = Depends(get_db)):
+    result = db.query(Client).filter(Client.id == id).first()
+    if not result:
+        raise HTTPException(status_code=404, detail="Client not found")
+    return result
+
 @router.post("", response_model=ClientOut)
 async def create_client(
         client: ClientCreate,
@@ -67,7 +67,7 @@ async def create_client(
 @router.patch("/{id}", response_model=ClientOut)
 async def update_client(
         id: int,
-        update: ClientCreate,
+        update: ClientUpdate,
         db: Session = Depends(get_db)):
     to_update = db.query(Client).filter(Client.id == id).first()
     if not to_update:
@@ -82,7 +82,7 @@ async def update_client(
     return to_update
 
 @router.patch("", response_model=ClientOut)
-async def patch_clients(update_client: ClientCreate,
+async def patch_clients(update_client: ClientUpdate,
         id: Optional[int] = Query(default=None),
         telegram_id: Optional[int] = Query(default=None),
         phone_number: Optional[str] = Query(default=None),
