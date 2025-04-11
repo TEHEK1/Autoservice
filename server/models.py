@@ -58,13 +58,22 @@ class Appointment(Base):
 
     car_model = Column(String, nullable=True)
     scheduled_time = Column(DateTime, nullable=False)
+    status = Column(String, nullable=False, default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class AppointmentCreate(BaseModel):
     client_id: int
     service_id: int
-    car_model: Optional[str]
+    car_model: Optional[str] = None
     scheduled_time: datetime
+    status: str = "pending"
+
+class AppointmentUpdate(BaseModel):
+    client_id: Optional[int] = None
+    service_id: Optional[int] = None
+    car_model: Optional[str] = None
+    scheduled_time: Optional[datetime] = None
+    status: Optional[str] = None
 
 class AppointmentOut(AppointmentCreate):
     id: int

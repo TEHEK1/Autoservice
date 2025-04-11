@@ -8,14 +8,15 @@ from sqlalchemy.orm import Session
 
 from server.database import get_db
 from server.models import Client, ClientCreate, ClientOut
+
 router = APIRouter()
 
 @router.get("", response_model=List[ClientOut])
 @cache(expire=600, namespace="clients")
 async def get_clients(db: Session = Depends(get_db)):
     print("Берем не из кеша")
-    clients = db.query(Client).all()
-    return clients
+    result = db.query(Client).all()
+    return result
 
 @router.get("/{id}", response_model=ClientOut)
 @cache(expire=600, namespace="clients")
@@ -108,3 +109,19 @@ async def patch_clients(update_client: ClientCreate,
     db.commit()
     db.refresh(client)
     return client
+
+@router.delete("/{id}")
+async def delete_client(id: int, db: Session = Depends(get_db)):
+    client = db.query(Client).filter(Client.id == id).first()
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if client.appointments:
+        raise HTTPException(
+            status_code=400, 
+            detail="Cannot delete client with existing appointments. Delete appointments first."
+        )
+    
+    db.delete(client)
+    await FastAPICache.clear("clients")
+    db.commit()
+    return {"message": "Client deleted successfully"}

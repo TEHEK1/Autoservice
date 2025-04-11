@@ -1,38 +1,55 @@
+from aiogram import Bot, Dispatcher, types, Router
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.enums import ParseMode
-from aiogram.types import ContentType
-from aiogram.utils import executor
-from server.database import get_all_services, add_service
-from config.settings import settings
+from .config import TOKEN
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Инициализация бота и диспетчера
-bot = Bot(token=settings.ADMIN_BOT_TOKEN)
-dp = Dispatcher(bot)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-# Стартовое сообщение
-@dp.message_handler(commands=["start"])
-async def start(message: types.Message):
-    await message.answer("Добро пожаловать в панель администратора! Используйте /add_service для добавления услуги.")
+# Создаем общий роутер для главного меню
+main_router = Router()
 
-# Добавление услуги
-@dp.message_handler(commands=["add_service"])
-async def add_service_handler(message: types.Message):
-    args = message.get_args().split(" ", 1)
-    if len(args) == 2:
-        service_name, service_price = args
-        # Добавление услуги в базу данных
-        add_service(service_name, service_price)
-        await message.answer(f"Услуга '{service_name}' успешно добавлена.")
-    else:
-        await message.answer("Для добавления услуги используйте команду: /add_service <название> <цена>.")
+@main_router.message(Command("start"))
+async def command_start(message: types.Message):
+    """Обработчик команды /start"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Записи", callback_data="appointments")],
+        [InlineKeyboardButton(text="👤 Клиенты", callback_data="clients")],
+        [InlineKeyboardButton(text="🔧 Услуги", callback_data="services")]
+    ])
+    await message.answer("🏠 Главное меню", reply_markup=keyboard)
 
-# Запуск бота
-async def on_startup(dp):
-    logging.info("Starting admin bot...")
+@main_router.callback_query(lambda c: c.data == "main_menu")
+async def main_menu(callback: types.CallbackQuery):
+    """Возврат в главное меню"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Записи", callback_data="appointments")],
+        [InlineKeyboardButton(text="👤 Клиенты", callback_data="clients")],
+        [InlineKeyboardButton(text="🔧 Услуги", callback_data="services")]
+    ])
+    await callback.message.edit_text("🏠 Главное меню", reply_markup=keyboard)
+    await callback.answer()
+
+# Регистрация всех роутеров
+dp.include_router(main_router)
+
+# Импортируем и регистрируем остальные роутеры после создания основного
+from .handlers import appointments, clients, services
+dp.include_router(appointments.router)
+dp.include_router(clients.router)
+dp.include_router(services.router)
+
+async def main():
+    """Запуск бота"""
+    logger.info("Starting bot...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    executor.start_polling(dp, on_startup=on_startup)
+    asyncio.run(main())

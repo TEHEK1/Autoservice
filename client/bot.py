@@ -1,39 +1,43 @@
+from aiogram import Bot, Dispatcher, types, Router
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types
-from aiogram.enums import ParseMode
-from aiogram.types import ContentType
-from aiogram.utils import executor
-from server.database import get_user, create_user
-from config.settings import settings
+from .config import TOKEN
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Инициализация бота и диспетчера
-bot = Bot(token=settings.BOT_TOKEN)
-dp = Dispatcher(bot)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-# Стартовое сообщение
-@dp.message_handler(commands=["start"])
-async def start(message: types.Message):
-    await message.answer("Добро пожаловать в наш автосервис! Напишите /services для выбора услуги.")
+# Создаем общий роутер для главного меню
+main_router = Router()
 
-# Обработка команды /services
-@dp.message_handler(commands=["services"])
-async def list_services(message: types.Message):
-    await message.answer(
-        "Выберите услугу:",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+@main_router.callback_query(lambda c: c.data == "main_menu")
+async def main_menu(callback: types.CallbackQuery):
+    """Возврат в главное меню"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Мои записи", callback_data="my_appointments")],
+        [InlineKeyboardButton(text="➕ Записаться на услугу", callback_data="create_appointment")]
+    ])
+    await callback.message.edit_text("🏠 Главное меню", reply_markup=keyboard)
+    await callback.answer()
 
-# Обработка обычных сообщений
-@dp.message_handler(content_types=ContentType.TEXT)
-async def handle_text(message: types.Message):
-    pass
+# Регистрация всех роутеров
+dp.include_router(main_router)
 
-# Запуск бота
-async def on_startup(dp):
-    logging.info("Starting bot...")
+# Импортируем и регистрируем остальные роутеры после создания основного
+from .handlers import registration, appointments
+dp.include_router(registration.router)
+dp.include_router(appointments.router)
+
+async def main():
+    """Запуск бота"""
+    logger.info("Starting bot...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    executor.start_polling(dp, on_startup=on_startup)
+    asyncio.run(main())
