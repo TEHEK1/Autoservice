@@ -16,6 +16,7 @@ router = Router()
 class EditProfileState(StatesGroup):
     waiting_for_phone = State()
     waiting_for_name = State()
+    waiting_for_timezone = State()
 
 @router.message(Command("profile"))
 async def command_profile(message: Message):
@@ -38,6 +39,7 @@ async def command_profile(message: Message):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📱 Телефон", callback_data="edit_phone")],
                 [InlineKeyboardButton(text="📝 Имя", callback_data="edit_name")],
+                [InlineKeyboardButton(text="🌍 Часовой пояс", callback_data="edit_timezone")],
                 [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")]
             ])
             
@@ -45,6 +47,7 @@ async def command_profile(message: Message):
                 f"👤 Настройки профиля\n\n"
                 f"Имя: {current_client['name']}\n"
                 f"Телефон: {current_client['phone_number']}\n"
+                f"Часовой пояс: {current_client.get('timezone', 'Не указан')}\n"
                 f"Telegram ID: {current_client.get('telegram_id', 'Не указан')}\n\n"
                 f"Выберите настройку для изменения:",
                 reply_markup=keyboard
@@ -92,6 +95,7 @@ async def process_phone(message: Message, state: FSMContext):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📱 Телефон", callback_data="edit_phone")],
                 [InlineKeyboardButton(text="📝 Имя", callback_data="edit_name")],
+                [InlineKeyboardButton(text="🌍 Часовой пояс", callback_data="edit_timezone")],
                 [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")]
             ])
             
@@ -99,6 +103,7 @@ async def process_phone(message: Message, state: FSMContext):
                 f"✅ Телефон успешно обновлен!\n\n"
                 f"Имя: {current_client['name']}\n"
                 f"Телефон: {message.text}\n"
+                f"Часовой пояс: {current_client.get('timezone', 'Не указан')}\n"
                 f"Telegram ID: {current_client.get('telegram_id', 'Не указан')}\n\n"
                 f"Выберите настройку для изменения:",
                 reply_markup=keyboard
@@ -147,6 +152,7 @@ async def process_name(message: Message, state: FSMContext):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📱 Телефон", callback_data="edit_phone")],
                 [InlineKeyboardButton(text="📝 Имя", callback_data="edit_name")],
+                [InlineKeyboardButton(text="🌍 Часовой пояс", callback_data="edit_timezone")],
                 [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")]
             ])
             
@@ -154,6 +160,7 @@ async def process_name(message: Message, state: FSMContext):
                 f"✅ Имя успешно обновлено!\n\n"
                 f"Имя: {message.text}\n"
                 f"Телефон: {current_client['phone_number']}\n"
+                f"Часовой пояс: {current_client.get('timezone', 'Не указан')}\n"
                 f"Telegram ID: {current_client.get('telegram_id', 'Не указан')}\n\n"
                 f"Выберите настройку для изменения:",
                 reply_markup=keyboard
@@ -163,6 +170,69 @@ async def process_name(message: Message, state: FSMContext):
         logger.error(f"Ошибка при обновлении имени: {e}")
         await message.answer("❌ Произошла ошибка при обновлении имени")
         await state.clear()
+
+@router.callback_query(F.data == "edit_timezone")
+async def edit_timezone(callback: CallbackQuery, state: FSMContext):
+    """Начало изменения часового пояса"""
+    try:
+        # Получаем список доступных часовых поясов
+        timezones = [
+            "Europe/Moscow",
+            "Europe/Kiev",
+            "Europe/Minsk",
+            "Asia/Yekaterinburg",
+            "Asia/Novosibirsk",
+            "Asia/Vladivostok"
+        ]
+        
+        # Создаем клавиатуру с часовыми поясами
+        buttons = []
+        for tz in timezones:
+            buttons.append([
+                InlineKeyboardButton(
+                    text=tz,
+                    callback_data=f"set_timezone_{tz}"
+                )
+            ])
+        
+        buttons.append([
+            InlineKeyboardButton(text="◀️ Назад", callback_data="profile")
+        ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await callback.message.edit_text("🌍 Выберите часовой пояс:", reply_markup=keyboard)
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка при выборе часового пояса: {e}")
+        await callback.message.answer("❌ Произошла ошибка при выборе часового пояса")
+
+@router.callback_query(F.data.startswith("set_timezone_"))
+async def process_timezone_setting(callback: CallbackQuery):
+    """Обработка установки часового пояса"""
+    try:
+        # Получаем выбранный часовой пояс
+        timezone = callback.data.split("_")[-1]
+        
+        # Обновляем часовой пояс клиента
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(
+                f"{API_URL}/clients",
+                params={"telegram_id": callback.from_user.id},
+                json={"timezone": timezone}
+            )
+            response.raise_for_status()
+            
+            await callback.message.edit_text(f"✅ Часовой пояс установлен: {timezone}")
+            await callback.answer()
+            
+            # Возвращаемся к профилю
+            await show_profile(callback)
+            
+    except Exception as e:
+        logger.error(f"Ошибка при установке часового пояса: {e}")
+        await callback.message.answer("❌ Произошла ошибка при установке часового пояса")
 
 @router.callback_query(F.data == "profile")
 async def show_profile(callback: CallbackQuery):
@@ -185,13 +255,15 @@ async def show_profile(callback: CallbackQuery):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📱 Телефон", callback_data="edit_phone")],
                 [InlineKeyboardButton(text="📝 Имя", callback_data="edit_name")],
+                [InlineKeyboardButton(text="🌍 Часовой пояс", callback_data="edit_timezone")],
                 [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")]
             ])
             
             await callback.message.edit_text(
-                f"👤 Настройки профиля\n\n"
+                f"�� Настройки профиля\n\n"
                 f"Имя: {current_client['name']}\n"
                 f"Телефон: {current_client['phone_number']}\n"
+                f"Часовой пояс: {current_client.get('timezone', 'Не указан')}\n"
                 f"Telegram ID: {current_client.get('telegram_id', 'Не указан')}\n\n"
                 f"Выберите настройку для изменения:",
                 reply_markup=keyboard

@@ -38,6 +38,7 @@ class Client(Base):
     telegram_id = Column(BigInteger, unique=True, nullable=True, index=True)
     name = Column(String, nullable=True)
     phone_number = Column(String, unique=True, nullable=True, index=True)
+    timezone = Column(String, nullable=True, default="Europe/Moscow")
 
     appointments = relationship("Appointment", back_populates="client")
 
@@ -45,11 +46,13 @@ class ClientCreate(BaseModel):
     name: str
     phone_number: Optional[str] = None
     telegram_id: Optional[int] = None
+    timezone: Optional[str] = "Europe/Moscow"
 
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
     phone_number: Optional[str] = None
     telegram_id: Optional[int] = None
+    timezone: Optional[str] = None
 
 class ClientOut(ClientCreate):
     id: int

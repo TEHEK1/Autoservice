@@ -16,15 +16,6 @@ keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
 ])
 
-@router.message(Command("start"))
-async def command_start(message: Message):
-    """Обработчик команды /start"""
-    await message.answer(
-        "👋 Добро пожаловать в бот автосервиса!\n\n"
-        "Выберите действие:",
-        reply_markup=keyboard
-    )
-
 @router.callback_query(F.data == "main_menu")
 async def back_to_main_menu(callback: CallbackQuery):
     """Возврат в главное меню"""

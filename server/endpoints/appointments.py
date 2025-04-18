@@ -1,4 +1,7 @@
+import logging
 from typing import List, Optional
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
 from fastapi.params import Depends, Query
@@ -8,7 +11,10 @@ from sqlalchemy.orm import Session
 
 from server.database import get_db
 from server.models import Appointment, AppointmentCreate, AppointmentOut, AppointmentUpdate
+from .notifications import NotificationPayload, delete_notification, schedule_notification
 
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 router = APIRouter()
 
 @router.get("", response_model=List[AppointmentOut])
@@ -39,12 +45,35 @@ async def patch_appointments(
     if not to_update:
         raise HTTPException(status_code=404, detail="Appointment not found")
 
+    # Конвертируем в Pydantic модель для удобной работы
+    appointment_out = AppointmentOut.model_validate(to_update)
+    old_scheduled_time = appointment_out.scheduled_time
+    new_scheduled_time = update.scheduled_time
+
+
+    # Обновляем SQLAlchemy модель
     for key, value in update.model_dump(exclude_unset=True).items():
         setattr(to_update, key, value)
 
     await FastAPICache.clear("appointments")
     db.commit()
     db.refresh(to_update)
+
+    # Удаляем старое уведомление если есть
+    try:
+        await delete_notification(
+            f"notification_{appointment_out.client_id}_{(old_scheduled_time - timedelta(hours=1)).timestamp()}")
+    except Exception as e:
+        print(f"Ошибка при удалении старого уведомления: {e}")
+
+    # Создаем новое уведомление
+    notification = NotificationPayload(
+        scheduled_time=new_scheduled_time - timedelta(hours=1),
+        client_id=appointment_out.client_id,
+        payload={"appointment_id": id}
+    )
+    await schedule_notification(notification)
+    
     return to_update
 
 @router.post("", response_model=AppointmentOut)
@@ -57,6 +86,31 @@ async def create_appointment(
     await FastAPICache.clear("appointments")
     db.commit()
     db.refresh(db_appointment)
+    
+    # Создаем уведомление
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    
+    # Убедимся, что время в UTC
+    scheduled_time = appointment.scheduled_time
+    if scheduled_time.tzinfo is None:
+        scheduled_time = scheduled_time.replace(tzinfo=ZoneInfo("UTC"))
+    else:
+        # Если время в другом часовом поясе, конвертируем в UTC
+        scheduled_time = scheduled_time.astimezone(ZoneInfo("UTC"))
+    
+    # Вычисляем время уведомления (за час до записи)
+    notification_time = scheduled_time - timedelta(hours=1)
+    
+    notification = NotificationPayload(
+        scheduled_time=notification_time,
+        client_id=appointment.client_id,
+        payload={"appointment_id": db_appointment.id}
+    )
+    logger.info(f"Создаем уведомление на {notification_time} UTC")
+    print(f"Создаем уведомление на {notification_time} UTC")  # Добавляем print для отладки
+    await schedule_notification(notification)
+    
     return db_appointment
 
 @router.delete("/{id}")

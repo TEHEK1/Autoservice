@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta
 import calendar
 from typing import List, Dict, Optional
+from zoneinfo import ZoneInfo
 
 from aiogram.fsm.state import StatesGroup, State
 
@@ -150,16 +151,35 @@ async def process_create_time(message: Message, state: FSMContext):
     try:
         time = datetime.strptime(message.text.strip(), "%H:%M")
         data = await state.get_data()
-        scheduled_time = f"{data['date']}T{time.strftime('%H:%M')}:00Z"
         
-        # Получаем client_id
+        # Преобразуем строку даты в объект date
+        date_obj = datetime.strptime(data['date'], "%Y-%m-%d").date()
+        
+        # Получаем часовой пояс клиента из базы данных
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{API_URL}/clients/search?telegram_id={message.from_user.id}")
+            response = await client.get(
+                f"{API_URL}/clients/search",
+                params={"telegram_id": message.from_user.id}
+            )
             if response.status_code != 200:
-                raise Exception("Клиент не найден")
-            client_data = response.json()
+                raise ValueError("Клиент не найден")
             
-            # Создаем запись
+            client_data = response.json()
+            if not client_data:
+                await message.answer("❌ Ошибка: вы не зарегистрированы. Пожалуйста, зарегистрируйтесь с помощью команды /start")
+                await state.clear()
+                return
+                
+            client_timezone = client_data.get('timezone', 'Europe/Moscow')
+        
+        # Создаем datetime с учетом часового пояса клиента
+        local_time = datetime.combine(date_obj, time.time()).replace(tzinfo=ZoneInfo(client_timezone))
+        utc_time = local_time.astimezone(ZoneInfo("UTC"))
+        
+        scheduled_time = utc_time.isoformat()
+        
+        # Создаем запись
+        async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{API_URL}/appointments",
                 json={
@@ -178,11 +198,12 @@ async def process_create_time(message: Message, state: FSMContext):
             # Возвращаемся к списку записей
             await command_appointments(message)
             
-    except ValueError:
-        await message.answer("❌ Неверный формат времени. Введите время в формате ЧЧ:ММ:")
+    except ValueError as e:
+        await message.answer(f"❌ {str(e)}")
+        await state.clear()
     except Exception as e:
         logger.error(f"Ошибка при создании записи: {e}")
-        await message.answer("❌ Произошла ошибка при создании записи")
+        await message.answer("❌ Произошла ошибка при создании записи. Пожалуйста, попробуйте позже.")
         await state.clear()
 
 @router.callback_query(AppointmentCallback.filter(F.action == "select_service"))
@@ -250,7 +271,7 @@ async def select_date(callback: CallbackQuery, state: FSMContext, callback_data:
             date_obj = datetime.strptime(selected_date, "%d.%m.%Y")
             booked_slots = []
             for appointment in appointments:
-                appointment_date = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+                appointment_date = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00')).replace(tzinfo=ZoneInfo("UTC"))
                 if appointment_date.date() == date_obj.date():
                     booked_slots.append(appointment_date.hour)
             
@@ -413,6 +434,9 @@ async def get_appointments_list(telegram_id: int) -> tuple[str, InlineKeyboardMa
             if not current_client:
                 return "❌ Ошибка: клиент не найден. Пожалуйста, зарегистрируйтесь.", None
             
+            # Получаем часовой пояс клиента
+            client_timezone = current_client.get('timezone', 'Europe/Moscow')
+            
             # Получаем записи клиента через фильтр
             appointments_response = await client.get(
                 f"{API_URL}/appointments",
@@ -439,8 +463,9 @@ async def get_appointments_list(telegram_id: int) -> tuple[str, InlineKeyboardMa
             buttons = []
             for appointment in appointments:
                 service = services[appointment['service_id']]
-                scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
-                formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
+                scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00')).replace(tzinfo=ZoneInfo("UTC"))
+                local_time = scheduled_time.astimezone(ZoneInfo(client_timezone))
+                formatted_time = local_time.strftime("%d.%m.%Y %H:%M")
                 
                 buttons.append([
                     InlineKeyboardButton(
@@ -490,10 +515,25 @@ async def back_to_appointments(callback: types.CallbackQuery):
         await callback.message.edit_text(message_text)
     await callback.answer()
 
-async def get_appointment_info(appointment_id: int) -> tuple[str, InlineKeyboardMarkup]:
+async def get_appointment_info(appointment_id: int, telegram_id: int) -> tuple[str, InlineKeyboardMarkup]:
     """Получение информации о записи"""
     try:
         async with httpx.AsyncClient() as http_client:
+            # Получаем информацию о клиенте для часового пояса
+            client_response = await http_client.get(
+                f"{API_URL}/clients/search",
+                params={"telegram_id": telegram_id}
+            )
+            client_response.raise_for_status()
+            client_data = client_response.json()
+            
+            if not client_data:
+                logger.error(f"Клиент не найден: {telegram_id}")
+                return "❌ Ошибка: клиент не найден. Пожалуйста, зарегистрируйтесь.", None
+            
+            # Получаем часовой пояс клиента
+            client_timezone = client_data.get('timezone', 'Europe/Moscow')
+            
             # Получаем информацию о записи
             response = await http_client.get(f"{API_URL}/appointments/{appointment_id}")
             response.raise_for_status()
@@ -511,9 +551,10 @@ async def get_appointment_info(appointment_id: int) -> tuple[str, InlineKeyboard
                 logger.warning(f"Услуга с ID {appointment['service_id']} не найдена")
                 service_info = "🔧 Услуга: Не найдена\n"
             
-            # Форматируем дату и время
-            scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
-            formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
+            # Форматируем дату и время с учетом часового пояса клиента
+            scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00')).replace(tzinfo=ZoneInfo("UTC"))
+            local_time = scheduled_time.astimezone(ZoneInfo(client_timezone))
+            formatted_time = local_time.strftime("%d.%m.%Y %H:%M")
             
             # Создаем клавиатуру с кнопками управления
             buttons = [
@@ -553,8 +594,8 @@ async def process_appointment_selection(callback: CallbackQuery, callback_data: 
         appointment_id = callback_data.id
         logger.info(f"Получаем информацию о записи {appointment_id}")
         
-        # Получаем информацию о записи
-        message_text, keyboard = await get_appointment_info(appointment_id)
+        # Получаем информацию о записи с учетом часового пояса клиента
+        message_text, keyboard = await get_appointment_info(appointment_id, callback.from_user.id)
         await callback.message.edit_text(message_text, reply_markup=keyboard)
         await callback.answer()
             

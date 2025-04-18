@@ -128,9 +128,92 @@ async def command_appointments(message: Message):
 
 @router.callback_query(lambda c: c.data == "create_appointment")
 async def process_create_appointment_callback(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Введите дату записи (в формате ДД.ММ.ГГГГ):")
+    """Начало создания записи"""
     await state.set_state(CreateAppointmentState.waiting_for_date)
-    await callback.answer()
+    await callback.message.answer("📅 Введите дату в формате ДД.ММ.ГГГГ")
+
+@router.message(CreateAppointmentState.waiting_for_date)
+async def process_date(message: Message, state: FSMContext):
+    """Обработка ввода даты"""
+    try:
+        date = datetime.strptime(message.text, "%d.%m.%Y")
+        await state.update_data(date=date)
+        await state.set_state(CreateAppointmentState.waiting_for_time)
+        await message.answer("⏰ Введите время в формате ЧЧ:ММ")
+    except ValueError:
+        await message.answer("❌ Неверный формат даты. Введите дату в формате ДД.ММ.ГГГГ")
+
+@router.message(CreateAppointmentState.waiting_for_time)
+async def process_time(message: Message, state: FSMContext):
+    """Обработка ввода времени"""
+    try:
+        time = datetime.strptime(message.text, "%H:%M")
+        data = await state.get_data()
+        date = data["date"]
+        scheduled_time = datetime.combine(date.date(), time.time())
+        await state.update_data(scheduled_time=scheduled_time)
+        
+        # Показываем список клиентов
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{API_URL}/clients")
+            clients = response.json()
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=f"{client['name']} ({client['phone_number']})",
+                    callback_data=SelectClientCallback(id=client["id"]).pack()
+                )] for client in clients
+            ])
+            
+            await state.set_state(CreateAppointmentState.waiting_for_client)
+            await message.answer("👤 Выберите клиента:", reply_markup=keyboard)
+    except ValueError:
+        await message.answer("❌ Неверный формат времени. Введите время в формате ЧЧ:ММ")
+
+@router.callback_query(SelectClientCallback.filter(), CreateAppointmentState.waiting_for_client)
+async def process_client_selection(callback: CallbackQuery, callback_data: SelectClientCallback, state: FSMContext):
+    """Обработка выбора клиента"""
+    await state.update_data(client_id=callback_data.id)
+    
+    # Показываем список услуг
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{API_URL}/services")
+        services = response.json()
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"{service['name']} - {service['price']}₽",
+                callback_data=SelectServiceCallback(id=service["id"]).pack()
+            )] for service in services
+        ])
+        
+        await state.set_state(CreateAppointmentState.waiting_for_service)
+        await callback.message.answer("🔧 Выберите услугу:", reply_markup=keyboard)
+
+@router.callback_query(SelectServiceCallback.filter(), CreateAppointmentState.waiting_for_service)
+async def process_service_selection(callback: CallbackQuery, callback_data: SelectServiceCallback, state: FSMContext):
+    """Обработка выбора услуги и создание записи"""
+    data = await state.get_data()
+    
+    # Создаем запись
+    async with httpx.AsyncClient() as client:
+        appointment_data = {
+            "client_id": data["client_id"],
+            "service_id": callback_data.id,
+            "scheduled_time": data["scheduled_time"].isoformat(),
+            "status": "pending",
+            "car_model": None
+        }
+        
+        response = await client.post(f"{API_URL}/appointments", json=appointment_data)
+        if response.status_code == 200:
+            await callback.message.answer("✅ Запись успешно создана!")
+            # Показываем обновленный список записей
+            await command_appointments(callback.message)
+        else:
+            await callback.message.answer("❌ Ошибка при создании записи")
+    
+    await state.clear()
 
 @router.callback_query(lambda c: c.data == "delete_appointment")
 async def process_delete_appointment_callback(callback: types.CallbackQuery):
