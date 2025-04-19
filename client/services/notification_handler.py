@@ -69,7 +69,43 @@ class NotificationHandler:
         try:
             async with httpx.AsyncClient() as client:
                 logger.info(f"payload = {payload}")
+                
+                # Определение типа уведомления
+                notification_type = payload.get("type")
+                
+                if notification_type == "new_message":
+                    # Обработка нового сообщения
+                    message_data = payload.get("message", {})
+                    user_id = message_data.get("user_id")
+                    is_from_admin = message_data.get("is_from_admin")
+                    message_text = message_data.get("text", "Новое сообщение")
+                    
+                    if is_from_admin == 1 and user_id:
+                        # Сообщение от администратора - отправляем клиенту
+                        response = await client.get(f"{API_URL}/clients/{user_id}")
+                        response.raise_for_status()
+                        client_data = response.json()
+                        chat_id = client_data.get("telegram_id")
+                        
+                        if chat_id:
+                            await self.bot.send_message(
+                                chat_id=chat_id,
+                                text=f"📩 Новое сообщение от администратора:\n\n{message_text}"
+                            )
+                            logger.info(f"Отправлено уведомление о сообщении для клиента с chat_id: {chat_id}")
+                    elif is_from_admin == 0 and user_id:
+                        # Сообщение от клиента - оно должно обрабатываться обработчиком уведомлений администратора
+                        logger.info(f"Сообщение от клиента (id={user_id}), будет обработано в админском боте")
+                    else:
+                        logger.warning("Некорректные данные сообщения, уведомление не отправлено")
+                    return
+                
+                # Обработка уведомлений о записях (старый код)
                 client_id = payload.get("client_id")
+                if not client_id:
+                    logger.error("Отсутствует client_id в payload")
+                    return
+                    
                 response = await client.get(f"{API_URL}/clients/{client_id}")
                 response.raise_for_status()
                 chat_id = response.json()["telegram_id"]
@@ -94,8 +130,8 @@ class NotificationHandler:
                 else:
                     message = payload.get("text")
 
-                if not client_id or not message:
-                    logger.error("Отсутствуют обязательные поля в payload")
+                if not message:
+                    logger.error("Отсутствует текст сообщения в payload")
                     return
                 
                 await self.bot.send_message(

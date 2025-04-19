@@ -13,6 +13,7 @@ keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="📝 Мои записи", callback_data="my_appointments")],
     [InlineKeyboardButton(text="➕ Создать запись", callback_data="create_appointment")],
     [InlineKeyboardButton(text="⚙️ Настройки", callback_data="profile")],
+    [InlineKeyboardButton(text="📧 Сообщения", callback_data="messages")],
     [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
 ])
 

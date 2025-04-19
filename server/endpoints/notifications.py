@@ -132,4 +132,6 @@ def send_notification(payload: dict):
         redis_conn.publish("notifications", json.dumps(payload))
         logger.info(f"Отправил уведомление клиентской части: {payload}")
     except Exception as e:
-        print(f"Ошибка при отправке уведомления: {e}") 
+        logger.error(f"Ошибка при отправке уведомления: {e}")
+        
+    return {"status": "sent"} 

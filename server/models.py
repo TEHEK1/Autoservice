@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, BigInteger
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, BigInteger, Text
 from sqlalchemy.orm import relationship
 
 from server.database import Base
@@ -41,6 +41,7 @@ class Client(Base):
     timezone = Column(String, nullable=True, default="Europe/Moscow")
 
     appointments = relationship("Appointment", back_populates="client")
+    messages = relationship("Message", back_populates="client")
 
 class ClientCreate(BaseModel):
     name: str
@@ -90,5 +91,37 @@ class AppointmentUpdate(BaseModel):
 
 class AppointmentOut(AppointmentCreate):
     id: int
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True)
+    text = Column(Text, nullable=False)
+    
+    user_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
+    client = relationship("Client", back_populates="messages")
+    
+    is_from_admin = Column(Integer, default=0)  # 0 - от клиента к админу, 1 - от админа к клиенту
+    is_read = Column(Integer, default=0)  # 0 - не прочитано, 1 - прочитано
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class MessageCreate(BaseModel):
+    text: str
+    user_id: int
+    is_from_admin: Optional[int] = 0
+    is_read: Optional[int] = 0
+
+class MessageUpdate(BaseModel):
+    text: Optional[str] = None
+    is_read: Optional[int] = None
+
+class MessageOut(BaseModel):
+    id: int
+    text: str
+    user_id: int
+    is_from_admin: int
+    is_read: int
     created_at: datetime
     model_config = {"from_attributes": True}
