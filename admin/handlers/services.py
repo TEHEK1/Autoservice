@@ -50,7 +50,8 @@ async def command_services(message: Message):
             
             if not services:
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="➕ Создать услугу", callback_data="create_service")]
+                    [InlineKeyboardButton(text="➕ Создать услугу", callback_data="create_service")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
                 ])
                 await message.answer("🔧 Нет доступных услуг", reply_markup=keyboard)
                 return

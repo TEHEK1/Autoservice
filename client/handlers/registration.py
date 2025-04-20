@@ -12,6 +12,7 @@ from typing import List, Dict, Optional
 from aiogram.fsm.state import StatesGroup, State
 
 from ..config import API_URL
+from .main_menu import keyboard as main_menu_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,6 @@ router = Router()
 class ClientRegistrationState(StatesGroup):
     waiting_for_name = State()
     waiting_for_phone = State()
-    waiting_for_car = State()
 
 # Callback данные для регистрации
 class RegistrationCallback(CallbackData, prefix="registration"):
@@ -44,12 +44,9 @@ async def command_start(message: Message, state: FSMContext):
                 client_data = response.json()
                 await message.answer(
                     f"Добро пожаловать, {client_data['name']}!\n"
-                    f"Ваш номер телефона: {client_data['phone_number']}\n\n"
+                    "👋 Добро пожаловать в бот автосервиса!\n\n"
                     "Выберите действие:",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="📝 Записаться", callback_data="create_appointment")],
-                        [InlineKeyboardButton(text="📋 Мои записи", callback_data="my_appointments")]
-                    ])
+                    reply_markup=main_menu_keyboard
                 )
                 return
             
@@ -107,8 +104,8 @@ async def process_contact(message: Message, state: FSMContext):
     phone = message.contact.phone_number
     await state.update_data(phone=phone)
     
-    await message.answer("Введите модель вашего автомобиля:")
-    await state.set_state(ClientRegistrationState.waiting_for_car)
+    # Сразу переходим к регистрации
+    await register_client(message, state)
 
 @router.message(ClientRegistrationState.waiting_for_phone, F.text)
 async def process_phone(message: Message, state: FSMContext):
@@ -116,13 +113,11 @@ async def process_phone(message: Message, state: FSMContext):
     phone = message.text
     await state.update_data(phone=phone)
     
-    await message.answer("Введите модель вашего автомобиля:")
-    await state.set_state(ClientRegistrationState.waiting_for_car)
+    # Сразу переходим к регистрации
+    await register_client(message, state)
 
-@router.message(ClientRegistrationState.waiting_for_car)
-async def process_car(message: Message, state: FSMContext):
-    """Обработка ввода модели автомобиля"""
-    car_model = message.text
+async def register_client(message: Message, state: FSMContext):
+    """Регистрация клиента в API"""
     user_data = await state.get_data()
     
     try:
@@ -131,7 +126,7 @@ async def process_car(message: Message, state: FSMContext):
             client_data = {
                 "name": user_data['name'],
                 "phone_number": user_data['phone'],
-                "car_model": car_model,
+                "car_model": "Не указано", # Устанавливаем дефолтное значение
                 "telegram_id": message.from_user.id
             }
             
@@ -141,16 +136,12 @@ async def process_car(message: Message, state: FSMContext):
             # Очищаем состояние
             await state.clear()
             
-            # Показываем меню клиента
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📅 Мои записи", callback_data="my_appointments")],
-                [InlineKeyboardButton(text="➕ Записаться на услугу", callback_data="create_appointment")]
-            ])
-            
+            # Показываем главное меню
             await message.answer(
                 f"Регистрация успешно завершена, {user_data['name']}!\n\n"
-                f"Выберите действие:",
-                reply_markup=keyboard
+                "👋 Добро пожаловать в бот автосервиса!\n\n"
+                "Выберите действие:",
+                reply_markup=main_menu_keyboard
             )
     except Exception as e:
         logger.error(f"Ошибка при регистрации клиента: {e}")

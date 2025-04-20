@@ -70,7 +70,8 @@ async def command_appointments(message: Message):
             
             if not appointments:
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="➕ Создать запись", callback_data="create_appointment")]
+                    [InlineKeyboardButton(text="➕ Создать запись", callback_data="create_appointment")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
                 ])
                 await message.answer("📝 Нет доступных записей", reply_markup=keyboard)
                 return
@@ -108,7 +109,8 @@ async def command_appointments(message: Message):
             
             if not buttons:
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="➕ Создать запись", callback_data="create_appointment")]
+                    [InlineKeyboardButton(text="➕ Создать запись", callback_data="create_appointment")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
                 ])
                 await message.answer("📝 Нет доступных записей", reply_markup=keyboard)
                 return

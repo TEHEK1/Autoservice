@@ -75,7 +75,8 @@ async def show_working_periods(callback: CallbackQuery):
                 # Если периодов нет, предлагаем создать их
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="➕ Создать рабочий период", callback_data="create_working_period")],
-                    [InlineKeyboardButton(text="◀️ Назад", callback_data="time_slots")]
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="time_slots")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
                 ])
                 await callback.message.answer("❌ Нет рабочих периодов", reply_markup=keyboard)
                 await callback.answer()
@@ -142,6 +143,7 @@ async def view_time_slots_dates(callback: CallbackQuery):
     
     # Добавляем кнопки управления
     keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="time_slots")])
+    keyboard.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")])
     
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     await callback.message.answer("📅 Выберите дату для просмотра слотов:", reply_markup=markup)
@@ -166,7 +168,8 @@ async def view_slots_for_date(callback: CallbackQuery, callback_data: ViewSlotsC
             if not slots:
                 # Если слотов на эту дату нет
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="◀️ Назад к выбору даты", callback_data="view_time_slots")]
+                    [InlineKeyboardButton(text="◀️ Назад к выбору даты", callback_data="view_time_slots")],
+                    [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
                 ])
                 await callback.message.answer("❌ Нет слотов на выбранную дату", reply_markup=keyboard)
                 await callback.answer()

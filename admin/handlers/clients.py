@@ -42,7 +42,7 @@ async def get_client_info(client_id: int) -> tuple[str, InlineKeyboardMarkup]:
     """Получение информации о клиенте"""
     try:
         async with httpx.AsyncClient() as http_client:
-            response = await http_client.get(f"http://localhost:8000/clients/{client_id}")
+            response = await http_client.get(f"{API_URL}/clients/{client_id}")
             response.raise_for_status()
             client = response.json()
             
@@ -94,7 +94,8 @@ async def command_clients(message: Message):
             
             if not clients:
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="➕ Создать клиента", callback_data="create_client")]
+                    [InlineKeyboardButton(text="➕ Создать клиента", callback_data="create_client")],
+                    [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")]
                 ])
                 await message.answer("👤 Нет доступных клиентов", reply_markup=keyboard)
                 return
@@ -142,7 +143,7 @@ async def process_name_edit(message: Message, state: FSMContext):
         
         async with httpx.AsyncClient() as client:
             response = await client.patch(
-                f"http://localhost:8000/clients/{client_id}",
+                f"{API_URL}/clients/{client_id}",
                 json={"name": message.text.strip()}
             )
             response.raise_for_status()
@@ -178,7 +179,7 @@ async def process_create_phone(message: Message, state: FSMContext):
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "http://localhost:8000/clients",
+                f"{API_URL}/clients",
                 json={
                     "name": data['name'],
                     "phone_number": message.text.strip()
@@ -216,7 +217,7 @@ async def process_delete(callback: CallbackQuery, callback_data: ClientCallback,
         
         # Проверяем, есть ли связанные записи
         async with httpx.AsyncClient() as client:
-            response = await client.get("http://localhost:8000/appointments")
+            response = await client.get(f"{API_URL}/appointments")
             response.raise_for_status()
             appointments = response.json()
             
@@ -303,7 +304,7 @@ async def process_phone_edit(message: Message, state: FSMContext):
         
         async with httpx.AsyncClient() as client:
             response = await client.patch(
-                f"http://localhost:8000/clients/{client_id}",
+                f"{API_URL}/clients/{client_id}",
                 json={"phone_number": message.text.strip()}
             )
             response.raise_for_status()
