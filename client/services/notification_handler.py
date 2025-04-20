@@ -32,7 +32,8 @@ class NotificationHandler:
         logger.info("Запуск обработчика уведомлений...")
         
         # Инициализация Redis соединения
-        self.redis_conn = await aioredis.from_url("redis://localhost:6379")
+        redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+        self.redis_conn = await aioredis.from_url(redis_url)
         self.pubsub = self.redis_conn.pubsub()
         await self.pubsub.subscribe("notifications")
         

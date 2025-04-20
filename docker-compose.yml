@@ -1,0 +1,140 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:14
+    container_name: autoservice_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-autoservice_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - autoservice_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: autoservice_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - autoservice_network
+
+  server:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/Dockerfile.server
+    container_name: autoservice_server
+    command: uvicorn server.server:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    networks:
+      - autoservice_network
+    healthcheck:
+      test: ["CMD", "curl", "-s", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  client_bot:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/Dockerfile.bot
+    container_name: autoservice_client_bot
+    command: sh -c "sleep 30 && python -m client.bot"
+    volumes:
+      - .:/app
+    environment:
+      - CLIENT_TOKEN_BOT=${CLIENT_TOKEN_BOT}
+      - API_URL=http://server:8000
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - redis
+      - server
+    restart: unless-stopped
+    networks:
+      - autoservice_network
+
+  admin_bot:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/Dockerfile.bot
+    container_name: autoservice_admin_bot
+    command: sh -c "sleep 30 && python -m admin.bot"
+    volumes:
+      - .:/app
+    environment:
+      - ADMIN_TOKEN_BOT=${ADMIN_TOKEN_BOT}
+      - API_URL=http://server:8000
+      - REDIS_URL=${REDIS_URL}
+    depends_on:
+      - redis
+      - server
+    restart: unless-stopped
+    networks:
+      - autoservice_network
+
+  rq_worker:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/Dockerfile.worker
+    container_name: autoservice_rq_worker
+    command: rq worker default
+    volumes:
+      - .:/app
+    environment:
+      - ADMIN_TOKEN_BOT=${ADMIN_TOKEN_BOT}
+      - CLIENT_TOKEN_BOT=${CLIENT_TOKEN_BOT}
+      - REDIS_URL=${REDIS_URL}
+      - API_URL=http://server:8000
+    depends_on:
+      - redis
+      - server
+    restart: unless-stopped
+    networks:
+      - autoservice_network
+
+  rq_scheduler:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/Dockerfile.worker
+    container_name: autoservice_rq_scheduler
+    command: rqscheduler --host redis --port 6379 --db 0 --verbose
+    volumes:
+      - .:/app
+    environment:
+      - ADMIN_TOKEN_BOT=${ADMIN_TOKEN_BOT}
+      - CLIENT_TOKEN_BOT=${CLIENT_TOKEN_BOT}
+      - REDIS_URL=${REDIS_URL}
+      - API_URL=http://server:8000
+    depends_on:
+      - redis
+      - server
+    restart: unless-stopped
+    networks:
+      - autoservice_network
+
+networks:
+  autoservice_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data: 

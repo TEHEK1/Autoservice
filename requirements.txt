@@ -6,4 +6,8 @@ python-dotenv==1.0.0
 aiogram==3.2.0
 httpx==0.25.2
 redis==5.0.1
+rq==1.15.1
 rq-scheduler==0.13.1
+aioredis==2.0.1
+alembic==1.13.1
+fastapi-cache2==0.2.2

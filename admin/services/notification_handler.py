@@ -4,6 +4,7 @@ import logging
 from aiogram import Bot
 from datetime import datetime
 import httpx
+import os
 from ..config import API_URL
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,8 @@ class NotificationHandler:
     async def start_listening(self):
         """Запуск прослушивания уведомлений"""
         try:
-            self.redis = await aioredis.from_url("redis://localhost:6379")
+            redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+            self.redis = await aioredis.from_url(redis_url)
             self.pubsub = self.redis.pubsub()
             await self.pubsub.subscribe("notifications")
             

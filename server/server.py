@@ -1,5 +1,6 @@
 import hashlib
 from contextlib import asynccontextmanager
+import os
 
 from server.database import Base, engine
 from fastapi import FastAPI, Depends, HTTPException, Request, APIRouter
@@ -30,7 +31,8 @@ def my_custom_key_builder(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
-    redis_client = redis.Redis(host="localhost", port=6379)
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+    redis_client = redis.Redis.from_url(redis_url)
     FastAPICache.init(RedisBackend(redis_client), prefix="fast_api", key_builder=my_custom_key_builder)
     yield
     await redis_client.close()

@@ -12,7 +12,9 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-redis_conn = redis.Redis(host="localhost", port=6379)
+# Получаем URL Redis из переменной окружения или используем значение по умолчанию
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+redis_conn = redis.Redis.from_url(REDIS_URL)
 scheduler = Scheduler(connection=redis_conn)
 
 class NotificationPayload(BaseModel):
