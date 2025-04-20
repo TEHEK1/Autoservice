@@ -36,6 +36,14 @@ class AppointmentCallback(CallbackData, prefix="appointment"):
 class SelectServiceCallback(CallbackData, prefix="select_service"):
     id: int
 
+# Callback данные для выбора даты слота
+class SelectDateCallback(CallbackData, prefix="select_date"):
+    date: str
+
+# Callback данные для выбора слота
+class SelectSlotCallback(CallbackData, prefix="select_slot"):
+    slot_id: str  # Переименуем поле id в slot_id для предотвращения конфликтов
+
 # Рабочие часы сервиса (можно вынести в конфиг)
 WORKING_HOURS = {
     "start": 9,  # 9:00
@@ -50,7 +58,7 @@ class CreateAppointmentState(StatesGroup):
     waiting_for_car = State()
     waiting_for_service = State()
     waiting_for_date = State()
-    waiting_for_time = State()
+    waiting_for_slot = State()
 
 @router.message(Command("create_appointment"))
 async def command_create_appointment(message: Message, state: FSMContext):
@@ -130,81 +138,216 @@ async def process_create_car(message: Message, state: FSMContext):
 async def process_service_selection(callback: CallbackQuery, callback_data: SelectServiceCallback, state: FSMContext):
     """Обработка выбора услуги"""
     await state.update_data(service_id=callback_data.id)
-    await callback.message.answer("Введите дату в формате ДД.ММ.ГГГГ:")
-    await state.set_state(CreateAppointmentState.waiting_for_date)
-    await callback.answer()
-
-@router.message(CreateAppointmentState.waiting_for_date)
-async def process_create_date(message: Message, state: FSMContext):
-    """Обработка ввода даты"""
+    
+    # Получаем доступные даты из слотов
     try:
-        date = datetime.strptime(message.text.strip(), "%d.%m.%Y")
-        await state.update_data(date=date.strftime("%Y-%m-%d"))
-        await message.answer("Введите время в формате ЧЧ:ММ:")
-        await state.set_state(CreateAppointmentState.waiting_for_time)
-    except ValueError:
-        await message.answer("❌ Неверный формат даты. Введите дату в формате ДД.ММ.ГГГГ:")
+        # Получаем текущую дату
+        now = datetime.now()
+        
+        # Создаем кнопки для следующих 7 дней
+        dates = {}
+        for i in range(7):
+            date = now + timedelta(days=i)
+            date_str = date.strftime("%Y-%m-%d")
+            display_date = date.strftime("%d.%m.%Y (%a)")
+            dates[date_str] = display_date
+        
+        if not dates:
+            await callback.message.answer("❌ Нет доступных дат для записи. Пожалуйста, обратитесь к администратору.")
+            await state.clear()
+            await callback.answer()
+            return
+        
+        # Создаем клавиатуру с доступными датами
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=display_date,
+                callback_data=SelectDateCallback(date=date_str).pack()
+            )] for date_str, display_date in sorted(dates.items())
+        ])
+        
+        await callback.message.answer("Выберите дату:", reply_markup=keyboard)
+        await state.set_state(CreateAppointmentState.waiting_for_date)
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении доступных дат: {e}")
+        await callback.message.answer("❌ Произошла ошибка при получении доступных дат")
+        await state.clear()
+        await callback.answer()
 
-@router.message(CreateAppointmentState.waiting_for_time)
-async def process_create_time(message: Message, state: FSMContext):
-    """Обработка ввода времени"""
+@router.callback_query(SelectDateCallback.filter(), CreateAppointmentState.waiting_for_date)
+async def process_date_selection(callback: CallbackQuery, callback_data: SelectDateCallback, state: FSMContext):
+    """Обработка выбора даты"""
+    selected_date = callback_data.date
+    await state.update_data(selected_date=selected_date)
+    
     try:
-        time = datetime.strptime(message.text.strip(), "%H:%M")
-        data = await state.get_data()
-        
-        # Преобразуем строку даты в объект date
-        date_obj = datetime.strptime(data['date'], "%Y-%m-%d").date()
-        
-        # Получаем часовой пояс клиента из базы данных
-        async with httpx.AsyncClient() as client:
+        # Получаем слоты на выбранную дату
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
-                f"{API_URL}/clients/search",
-                params={"telegram_id": message.from_user.id}
+                f"{API_URL}/working_periods/time_slots",
+                params={"date": selected_date}
             )
-            if response.status_code != 200:
+            response.raise_for_status()
+            slots = response.json()
+            
+            if not slots:
+                await callback.message.answer("❌ Нет доступных слотов на выбранную дату. Пожалуйста, выберите другую дату.")
+                # Возвращаемся к выбору даты
+                await process_service_selection(callback, callback_data=SelectServiceCallback(id=(await state.get_data())['service_id']), state=state)
+                await callback.answer()
+                return
+            
+            # Фильтруем только доступные слоты
+            available_slots = [slot for slot in slots if slot['is_available']]
+            
+            if not available_slots:
+                await callback.message.answer("❌ Нет доступных слотов на выбранную дату. Пожалуйста, выберите другую дату.")
+                # Возвращаемся к выбору даты
+                await process_service_selection(callback, callback_data=SelectServiceCallback(id=(await state.get_data())['service_id']), state=state)
+                await callback.answer()
+                return
+            
+            # Сортируем слоты по времени начала
+            available_slots.sort(key=lambda x: x['start_time'])
+            
+            # Создаем клавиатуру со слотами
+            keyboard = []
+            for slot in available_slots:
+                slot_start = datetime.fromisoformat(slot['start_time'].replace('Z', '+00:00'))
+                slot_end = datetime.fromisoformat(slot['end_time'].replace('Z', '+00:00'))
+                
+                # Форматируем время для отображения
+                time_str = f"{slot_start.strftime('%H:%M')} - {slot_end.strftime('%H:%M')}"
+                
+                keyboard.append([
+                    InlineKeyboardButton(
+                        text=time_str,
+                        callback_data=SelectSlotCallback(slot_id=str(slot['id'])).pack()
+                    )
+                ])
+            
+            # Добавляем кнопку возврата к выбору даты
+            keyboard.append([
+                InlineKeyboardButton(text="◀️ Назад к выбору даты", callback_data="back_to_date_selection")
+            ])
+            
+            markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+            await callback.message.answer("Выберите время:", reply_markup=markup)
+            await state.set_state(CreateAppointmentState.waiting_for_slot)
+            await callback.answer()
+            
+    except Exception as e:
+        logger.error(f"Ошибка при получении доступных слотов: {e}")
+        await callback.message.answer("❌ Произошла ошибка при получении доступных слотов")
+        await state.clear()
+        await callback.answer()
+
+@router.callback_query(lambda c: c.data == "back_to_date_selection", CreateAppointmentState.waiting_for_slot)
+async def back_to_date_selection(callback: CallbackQuery, state: FSMContext):
+    """Возврат к выбору даты"""
+    await process_service_selection(callback, callback_data=SelectServiceCallback(id=(await state.get_data())['service_id']), state=state)
+
+@router.callback_query(SelectSlotCallback.filter(), CreateAppointmentState.waiting_for_slot)
+async def process_slot_selection(callback: CallbackQuery, callback_data: SelectSlotCallback, state: FSMContext):
+    """Обработка выбора слота"""
+    try:
+        # Получаем данные из состояния и выбранный слот
+        data = await state.get_data()
+        car_model = data['car_model']
+        service_id = data['service_id']
+        selected_date = data['selected_date']
+        slot_id = callback_data.slot_id
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Получаем текущие слоты для перепроверки
+            response = await client.get(
+                f"{API_URL}/working_periods/time_slots",
+                params={"date": selected_date}
+            )
+            response.raise_for_status()
+            slots = response.json()
+            
+            # Находим выбранный слот
+            selected_slot = None
+            for slot in slots:
+                if slot['id'] == slot_id:
+                    selected_slot = slot
+                    break
+            
+            if not selected_slot:
+                raise ValueError("Выбранный слот не найден")
+            
+            if not selected_slot['is_available']:
+                await callback.message.answer("❌ Выбранный слот уже занят. Пожалуйста, выберите другой слот.")
+                # Возвращаемся к выбору времени
+                await process_date_selection(callback, callback_data=SelectDateCallback(date=selected_date), state=state)
+                await callback.answer()
+                return
+            
+            # Получаем информацию о клиенте
+            client_response = await client.get(
+                f"{API_URL}/clients/search",
+                params={"telegram_id": callback.from_user.id}
+            )
+            if client_response.status_code != 200:
                 raise ValueError("Клиент не найден")
             
-            client_data = response.json()
+            client_data = client_response.json()
             if not client_data:
-                await message.answer("❌ Ошибка: вы не зарегистрированы. Пожалуйста, зарегистрируйтесь с помощью команды /start")
+                await callback.message.answer("❌ Ошибка: вы не зарегистрированы. Пожалуйста, зарегистрируйтесь с помощью команды /start")
                 await state.clear()
+                await callback.answer()
                 return
-                
-            client_timezone = client_data.get('timezone', 'Europe/Moscow')
-        
-        # Создаем datetime с учетом часового пояса клиента
-        local_time = datetime.combine(date_obj, time.time()).replace(tzinfo=ZoneInfo(client_timezone))
-        utc_time = local_time.astimezone(ZoneInfo("UTC"))
-        
-        scheduled_time = utc_time.isoformat()
-        
-        # Создаем запись
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
+            
+            # Получаем информацию о выбранной услуге
+            service_response = await client.get(f"{API_URL}/services/{service_id}")
+            service_response.raise_for_status()
+            service = service_response.json()
+            
+            # Создаем запись
+            slot_start = datetime.fromisoformat(selected_slot['start_time'].replace('Z', '+00:00'))
+            
+            appointment_response = await client.post(
                 f"{API_URL}/appointments",
                 json={
                     "client_id": client_data['id'],
-                    "service_id": data['service_id'],
-                    "car_model": data['car_model'],
-                    "scheduled_time": scheduled_time,
+                    "service_id": service_id,
+                    "car_model": car_model,
+                    "scheduled_time": selected_slot['start_time'],
                     "status": "pending"
                 }
             )
-            response.raise_for_status()
+            appointment_response.raise_for_status()
             
-            await message.answer("✅ Запись успешно создана")
+            # Форматируем сообщение для пользователя
+            slot_start_local = slot_start.astimezone(ZoneInfo(client_data.get('timezone', 'Europe/Moscow')))
+            formatted_time = slot_start_local.strftime("%d.%m.%Y %H:%M")
+            
+            await callback.message.answer(
+                f"✅ Запись успешно создана!\n\n"
+                f"🔧 Услуга: {service['name']}\n"
+                f"🚗 Автомобиль: {car_model}\n"
+                f"📅 Дата и время: {formatted_time}\n"
+                f"💰 Стоимость: {service['price']} руб."
+            )
+            
             await state.clear()
+            await callback.answer()
             
-            # Возвращаемся к списку записей
-            await command_appointments(message)
+            # Получаем список записей пользователя
+            message_text, keyboard = await get_appointments_list(callback.from_user.id)
+            if keyboard:
+                await callback.message.answer(message_text, reply_markup=keyboard)
+            else:
+                await callback.message.answer(message_text)
             
-    except ValueError as e:
-        await message.answer(f"❌ {str(e)}")
-        await state.clear()
     except Exception as e:
         logger.error(f"Ошибка при создании записи: {e}")
-        await message.answer("❌ Произошла ошибка при создании записи. Пожалуйста, попробуйте позже.")
+        await callback.message.answer("❌ Произошла ошибка при создании записи. Пожалуйста, попробуйте позже.")
         await state.clear()
+        await callback.answer()
 
 @router.callback_query(AppointmentCallback.filter(F.action == "select_service"))
 async def select_service(callback: CallbackQuery, state: FSMContext, callback_data: AppointmentCallback):

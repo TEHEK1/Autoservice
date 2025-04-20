@@ -94,6 +94,46 @@ class AppointmentOut(AppointmentCreate):
     created_at: datetime
     model_config = {"from_attributes": True}
 
+class WorkingPeriod(Base):
+    __tablename__ = "working_periods"
+
+    id = Column(Integer, primary_key=True)
+    start_date = Column(DateTime, nullable=False)  # Дата начала периода
+    end_date = Column(DateTime, nullable=False)    # Дата окончания периода
+    start_time = Column(String, nullable=False)    # Время начала работы (HH:MM)
+    end_time = Column(String, nullable=False)      # Время окончания работы (HH:MM)
+    slot_duration = Column(Integer, nullable=False, default=60)  # Длительность слота в минутах
+    is_active = Column(Integer, nullable=False, default=1)     # Активен ли период
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class WorkingPeriodCreate(BaseModel):
+    start_date: datetime
+    end_date: datetime
+    start_time: str
+    end_time: str
+    slot_duration: int = 60
+    is_active: int = 1
+
+class WorkingPeriodUpdate(BaseModel):
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    slot_duration: Optional[int] = None
+    is_active: Optional[int] = None
+
+class WorkingPeriodOut(WorkingPeriodCreate):
+    id: int
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+# Схема представления слота (не хранится в БД, генерируется динамически)
+class TimeSlot(BaseModel):
+    id: str  # Уникальный идентификатор слота (не ID в БД)
+    start_time: datetime
+    end_time: datetime
+    is_available: bool = True
+
 class Message(Base):
     __tablename__ = "messages"
 

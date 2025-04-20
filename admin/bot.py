@@ -12,12 +12,13 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # Регистрация всех роутеров
-from .handlers import main_menu, appointments, clients, services, messages
+from .handlers import main_menu, appointments, clients, services, messages, time_slots
 dp.include_router(main_menu.router)
 dp.include_router(appointments.router)
 dp.include_router(clients.router)
 dp.include_router(services.router)
 dp.include_router(messages.router)
+dp.include_router(time_slots.router)
 
 async def main():
     """Запуск бота"""

@@ -12,7 +12,7 @@ from typing import List, Callable, Optional
 
 import redis.asyncio as redis
 
-from server.endpoints import appointments, clients, services, notifications, messages
+from server.endpoints import appointments, clients, services, notifications, messages, working_periods
 
 def my_custom_key_builder(
     func: Callable,
@@ -42,3 +42,4 @@ app.include_router(clients.router, prefix="/clients", tags=["clients"])
 app.include_router(appointments.router, prefix="/appointments", tags=["appointments"])
 app.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 app.include_router(messages.router, prefix="/messages", tags=["messages"])
+app.include_router(working_periods.router, prefix="/working_periods", tags=["working_periods"])

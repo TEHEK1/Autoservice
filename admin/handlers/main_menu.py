@@ -13,27 +13,46 @@ keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="📝 Записи", callback_data="appointments")],
     [InlineKeyboardButton(text="👥 Клиенты", callback_data="clients")],
     [InlineKeyboardButton(text="🔧 Услуги", callback_data="services")],
-    [InlineKeyboardButton(text="📧 Сообщения", callback_data="messages")],
+    [InlineKeyboardButton(text="📅 Управление слотами", callback_data="time_slots")],
+    [InlineKeyboardButton(text="💬 Сообщения", callback_data="messages")],
     [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
 ])
 
 @router.message(Command("start"))
 async def command_start(message: Message):
-    """Обработчик команды /start"""
+    """Главное меню при запуске бота"""
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Записи", callback_data="appointments")],
+        [InlineKeyboardButton(text="👥 Клиенты", callback_data="clients")],
+        [InlineKeyboardButton(text="🔧 Услуги", callback_data="services")],
+        [InlineKeyboardButton(text="📅 Управление слотами", callback_data="time_slots")],
+        [InlineKeyboardButton(text="💬 Сообщения", callback_data="messages")]
+    ])
+    
     await message.answer(
-        "👋 Добро пожаловать в бот автосервиса!\n\n"
-        "Выберите действие:",
+        "👋 Добро пожаловать в панель администратора!\n\n"
+        "Выберите раздел:",
         reply_markup=keyboard
     )
 
-@router.callback_query(F.data == "main_menu")
-async def back_to_main_menu(callback: CallbackQuery):
-    """Возврат в главное меню"""
-    await callback.message.edit_text(
-        "👋 Добро пожаловать в бот автосервиса!\n\n"
-        "Выберите действие:",
+@router.callback_query(lambda c: c.data == "main_menu")
+async def main_menu(callback: CallbackQuery):
+    """Обработчик для возврата в главное меню"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Записи", callback_data="appointments")],
+        [InlineKeyboardButton(text="👥 Клиенты", callback_data="clients")],
+        [InlineKeyboardButton(text="🔧 Услуги", callback_data="services")],
+        [InlineKeyboardButton(text="📅 Управление слотами", callback_data="time_slots")],
+        [InlineKeyboardButton(text="💬 Сообщения", callback_data="messages")]
+    ])
+    
+    await callback.message.answer(
+        "👋 Главное меню\n\n"
+        "Выберите раздел:",
         reply_markup=keyboard
     )
+    
     await callback.answer()
 
 @router.callback_query(F.data == "help")
