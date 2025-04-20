@@ -11,8 +11,14 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Импорт и регистрация middleware
+from .middleware import AuthMiddleware
+dp.message.middleware(AuthMiddleware())
+dp.callback_query.middleware(AuthMiddleware())
+
 # Регистрация всех роутеров
-from .handlers import main_menu, appointments, clients, services, messages, time_slots
+from .handlers import main_menu, appointments, clients, services, messages, time_slots, auth
+dp.include_router(auth.router)  # Роутер авторизации должен быть первым
 dp.include_router(main_menu.router)
 dp.include_router(appointments.router)
 dp.include_router(clients.router)

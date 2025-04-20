@@ -27,11 +27,14 @@
 
 ### Подготовка к запуску
 
-2. Отредактируйте `.env`, добавив реальные токены ботов:
+1. Отредактируйте `.env`, добавив реальные токены ботов:
    ```
    CLIENT_TOKEN_BOT=your_client_bot_token_from_botfather
    ADMIN_TOKEN_BOT=your_admin_bot_token_from_botfather
+
    ```
+2. Присвойте в `.env` ADMIN_PASSWORD_HASH хэш пароля для администратора, сгенерированного с помощью `python generate_password_hash.py`
+
 При желании также можно поменять логин и пароль к базе данных
 
 ## Запуск с использованием Docker

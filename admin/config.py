@@ -15,6 +15,11 @@ TOKEN = os.getenv("ADMIN_TOKEN_BOT")
 if not TOKEN:
     raise ValueError("ADMIN_TOKEN_BOT не найден в переменных окружения")
 
+# Получаем хеш пароля администратора
+ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH")
+if not ADMIN_PASSWORD_HASH:
+    raise ValueError("ADMIN_PASSWORD_HASH не найден в переменных окружения")
+
 # Получаем URL API из переменных окружения
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 if not API_URL.startswith(('http://', 'https://')):
