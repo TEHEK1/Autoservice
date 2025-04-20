@@ -6,6 +6,7 @@ from aiogram.filters.callback_data import CallbackData
 import httpx
 import logging
 from datetime import datetime
+import json
 
 from aiogram.fsm.state import StatesGroup, State
 
@@ -29,6 +30,10 @@ class CreateAppointmentState(StatesGroup):
 
 class DeleteAppointmentState(StatesGroup):
     waiting_for_confirmation = State()
+
+# Добавляем новый класс состояний для отклонения записи
+class RejectAppointmentState(StatesGroup):
+    waiting_for_reason = State()
 
 # Callback данные для записей
 class AppointmentCallback(CallbackData, prefix="appointment"):
@@ -197,23 +202,83 @@ async def process_service_selection(callback: CallbackQuery, callback_data: Sele
     """Обработка выбора услуги и создание записи"""
     data = await state.get_data()
     
-    # Создаем запись
-    async with httpx.AsyncClient() as client:
-        appointment_data = {
-            "client_id": data["client_id"],
-            "service_id": callback_data.id,
-            "scheduled_time": data["scheduled_time"].isoformat(),
-            "status": "pending",
-            "car_model": None
-        }
-        
-        response = await client.post(f"{API_URL}/appointments", json=appointment_data)
-        if response.status_code == 200:
-            await callback.message.answer("✅ Запись успешно создана!")
+    try:
+        # Создаем запись
+        async with httpx.AsyncClient() as client:
+            logger.info(f"Начинаем создание записи администратором: клиент ID {data['client_id']}, услуга ID {callback_data.id}")
+            
+            appointment_data = {
+                "client_id": data["client_id"],
+                "service_id": callback_data.id,
+                "scheduled_time": data["scheduled_time"].isoformat(),
+                "status": "confirmed",  # Записи, созданные администратором, сразу подтверждаются
+                "car_model": None
+            }
+            
+            # Создаем запись
+            response = await client.post(f"{API_URL}/appointments", json=appointment_data)
+            if response.status_code != 200:
+                logger.error(f"Ошибка при создании записи: {response.status_code}, {response.text}")
+                await callback.message.answer(f"❌ Ошибка при создании записи: {response.status_code}")
+                await state.clear()
+                return
+                
+            appointment = response.json()
+            logger.info(f"Создана запись: {appointment}")
+            
+            # Получаем информацию о клиенте
+            client_response = await client.get(f"{API_URL}/clients/{data['client_id']}")
+            if client_response.status_code != 200:
+                logger.error(f"Ошибка при получении клиента: {client_response.status_code}, {client_response.text}")
+                await callback.message.answer(f"✅ Запись создана, но возникла ошибка при получении данных клиента")
+                await command_appointments(callback.message)
+                await state.clear()
+                return
+                
+            client_data = client_response.json()
+            logger.info(f"Получен клиент: {client_data}")
+            
+            # Получаем информацию об услуге
+            service_response = await client.get(f"{API_URL}/services/{callback_data.id}")
+            if service_response.status_code != 200:
+                logger.error(f"Ошибка при получении услуги: {service_response.status_code}, {service_response.text}")
+                await callback.message.answer(f"✅ Запись создана, но возникла ошибка при получении данных услуги")
+                await command_appointments(callback.message)
+                await state.clear()
+                return
+                
+            service_data = service_response.json()
+            logger.info(f"Получена услуга: {service_data}")
+            
+            # Форматируем дату и время для уведомления
+            formatted_time = data["scheduled_time"].strftime("%d.%m.%Y %H:%M")
+            
+            # Создаем сообщение для клиента
+            message_data = {
+                "text": f"✅ Администратор создал для вас запись на услугу \"{service_data['name']}\"!\n\n"
+                        f"📅 Дата и время: {formatted_time}\n"
+                        f"💰 Стоимость: {service_data['price']} руб.\n\n"
+                        f"Ждем вас по адресу: ул. Автосервисная, 123\n"
+                        f"Контактный телефон: +7 (123) 456-78-90",
+                "user_id": client_data['id'],
+                "is_from_admin": 1,  # Сообщение от администратора
+                "is_read": 0  # Непрочитанное
+            }
+            
+            # Отправляем уведомление клиенту
+            messages_response = await client.post(f"{API_URL}/messages/", json=message_data)
+            if messages_response.status_code != 200:
+                logger.error(f"Ошибка при отправке сообщения: {messages_response.status_code}, {messages_response.text}")
+                await callback.message.answer("✅ Запись создана, но не удалось отправить уведомление клиенту")
+            else:
+                logger.info(f"Сообщение клиенту успешно отправлено")
+                await callback.message.answer("✅ Запись успешно создана и клиент уведомлен!")
+                
             # Показываем обновленный список записей
             await command_appointments(callback.message)
-        else:
-            await callback.message.answer("❌ Ошибка при создании записи")
+    except Exception as e:
+        logger.error(f"Ошибка при создании записи: {e}")
+        await callback.message.answer(f"❌ Произошла ошибка при создании записи: {str(e)}")
     
     await state.clear()
 
@@ -460,6 +525,228 @@ async def process_confirm_delete(callback: types.CallbackQuery, callback_data: A
     
     await callback.answer()
 
+@router.callback_query(AppointmentCallback.filter(F.action == "confirm"))
+async def confirm_appointment(callback: CallbackQuery, callback_data: AppointmentCallback):
+    """Подтверждение записи администратором"""
+    try:
+        appointment_id = callback_data.id
+        logger.info(f"Начинаем подтверждение записи с ID {appointment_id}")
+        
+        async with httpx.AsyncClient() as http_client:
+            # Получаем информацию о записи
+            appointment_response = await http_client.get(f"{API_URL}/appointments/{appointment_id}")
+            if appointment_response.status_code != 200:
+                logger.error(f"Ошибка при получении записи: {appointment_response.status_code}, {appointment_response.text}")
+                await callback.answer("❌ Ошибка при получении информации о записи", show_alert=True)
+                return
+            
+            appointment = appointment_response.json()
+            logger.info(f"Получена запись: {appointment}")
+            
+            # Обновляем статус записи на 'confirmed'
+            update_data = {"status": "confirmed"}
+            response = await http_client.patch(f"{API_URL}/appointments/{appointment_id}", json=update_data)
+            
+            if response.status_code == 200:
+                logger.info("Статус записи успешно обновлен на confirmed")
+                
+                # Получаем информацию о клиенте для уведомления
+                client_response = await http_client.get(f"{API_URL}/clients/{appointment['client_id']}")
+                if client_response.status_code != 200:
+                    logger.error(f"Ошибка при получении клиента: {client_response.status_code}, {client_response.text}")
+                    await callback.answer("❌ Ошибка при получении информации о клиенте", show_alert=True)
+                    return
+                
+                client = client_response.json()
+                logger.info(f"Получен клиент: {client}")
+                
+                # Получаем информацию об услуге
+                service_response = await http_client.get(f"{API_URL}/services/{appointment['service_id']}")
+                if service_response.status_code != 200:
+                    logger.error(f"Ошибка при получении услуги: {service_response.status_code}, {service_response.text}")
+                    await callback.answer("❌ Ошибка при получении информации об услуге", show_alert=True)
+                    return
+                
+                service = service_response.json()
+                logger.info(f"Получена услуга: {service}")
+                
+                # Форматируем дату и время
+                scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+                formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
+                
+                # Создаем сообщение для клиента
+                message_data = {
+                    "text": f"✅ Ваша запись на услугу \"{service['name']}\" подтверждена!\n\n"
+                            f"📅 Дата и время: {formatted_time}\n"
+                            f"💰 Стоимость: {service['price']} руб.\n"
+                            f"🚗 Автомобиль: {appointment['car_model'] or 'Не указан'}\n\n"
+                            f"Ждем вас по адресу: ул. Автосервисная, 123\n"
+                            f"Контактный телефон: +7 (123) 456-78-90",
+                    "user_id": client['id'],
+                    "is_from_admin": 1,  # Сообщение от администратора
+                    "is_read": 0  # Непрочитанное
+                }
+                
+                # Отправляем сообщение клиенту
+                messages_response = await http_client.post(f"{API_URL}/messages/", json=message_data)
+                if messages_response.status_code != 200:
+                    logger.error(f"Ошибка при отправке сообщения: {messages_response.status_code}, {messages_response.text}")
+                    await callback.answer("✅ Запись подтверждена, но не удалось отправить уведомление клиенту", show_alert=True)
+                else:
+                    logger.info(f"Сообщение клиенту успешно отправлено")
+                    
+                # Обновляем информацию о записи на странице
+                await show_appointment_details(callback, appointment_id)
+                
+                await callback.answer("✅ Запись успешно подтверждена!")
+            else:
+                logger.error(f"Ошибка при обновлении статуса: {response.status_code}, {response.text}")
+                await callback.answer("❌ Ошибка при подтверждении записи", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка при подтверждении записи: {e}")
+        await callback.answer("❌ Произошла ошибка при подтверждении записи", show_alert=True)
+
+@router.callback_query(AppointmentCallback.filter(F.action == "reject"))
+async def reject_appointment_start(callback: CallbackQuery, callback_data: AppointmentCallback, state: FSMContext):
+    """Начало процесса отклонения записи - запрос причины"""
+    try:
+        appointment_id = callback_data.id
+        await state.set_state(RejectAppointmentState.waiting_for_reason)
+        await state.update_data(appointment_id=appointment_id)
+        await callback.message.edit_text("Пожалуйста, введите причину отклонения записи:")
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при начале процесса отклонения записи: {e}")
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+@router.message(RejectAppointmentState.waiting_for_reason)
+async def process_reject_reason(message: Message, state: FSMContext):
+    """Обработка ввода причины отклонения записи"""
+    try:
+        data = await state.get_data()
+        appointment_id = data["appointment_id"]
+        rejection_reason = message.text
+        
+        async with httpx.AsyncClient() as http_client:
+            # Получаем информацию о записи
+            appointment_response = await http_client.get(f"{API_URL}/appointments/{appointment_id}")
+            if appointment_response.status_code != 200:
+                logger.error(f"Ошибка при получении записи: {appointment_response.status_code}, {appointment_response.text}")
+                await message.answer("❌ Ошибка при получении информации о записи")
+                await state.clear()
+                return
+                
+            appointment = appointment_response.json()
+            logger.info(f"Получена запись: {appointment}")
+            
+            # Обновляем статус записи на 'rejected'
+            update_data = {"status": "rejected"}
+            response = await http_client.patch(f"{API_URL}/appointments/{appointment_id}", json=update_data)
+            
+            if response.status_code == 200:
+                logger.info("Статус записи успешно обновлен на rejected")
+                
+                # Получаем информацию о клиенте для уведомления
+                client_response = await http_client.get(f"{API_URL}/clients/{appointment['client_id']}")
+                if client_response.status_code != 200:
+                    logger.error(f"Ошибка при получении клиента: {client_response.status_code}, {client_response.text}")
+                    await message.answer("❌ Ошибка при получении информации о клиенте")
+                    await state.clear()
+                    return
+                    
+                client = client_response.json()
+                logger.info(f"Получен клиент: {client}")
+                
+                # Получаем информацию об услуге
+                service_response = await http_client.get(f"{API_URL}/services/{appointment['service_id']}")
+                if service_response.status_code != 200:
+                    logger.error(f"Ошибка при получении услуги: {service_response.status_code}, {service_response.text}")
+                    await message.answer("❌ Ошибка при получении информации об услуге")
+                    await state.clear()
+                    return
+                    
+                service = service_response.json()
+                logger.info(f"Получена услуга: {service}")
+                
+                # Форматируем дату и время
+                scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
+                formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
+                
+                # Создаем сообщение для клиента с указанием причины
+                message_data = {
+                    "text": f"❌ К сожалению, ваша запись на услугу \"{service['name']}\" отклонена.\n\n"
+                            f"📅 Запрошенная дата и время: {formatted_time}\n"
+                            f"⚠️ Причина: {rejection_reason}\n\n"
+                            f"Пожалуйста, выберите другую дату или время или свяжитесь через встроенный чат",
+                    "user_id": client['id'],
+                    "is_from_admin": 1,  # Сообщение от администратора
+                    "is_read": 0  # Непрочитанное
+                }
+                
+                # Отправляем сообщение клиенту
+                messages_response = await http_client.post(f"{API_URL}/messages/", json=message_data)
+                if messages_response.status_code != 200:
+                    logger.error(f"Ошибка при отправке сообщения: {messages_response.status_code}, {messages_response.text}")
+                    await message.answer("❌ Ошибка при отправке сообщения клиенту")
+                else:
+                    logger.info(f"Сообщение клиенту успешно отправлено")
+                
+                # Удаляем запись
+                delete_response = await http_client.delete(f"{API_URL}/appointments/{appointment_id}")
+                if delete_response.status_code == 200:
+                    await message.answer(f"✅ Запись №{appointment_id} отклонена и удалена.\nПричина: {rejection_reason}")
+                else:
+                    await message.answer(f"✅ Запись отклонена, но удалить её не удалось. Причина: {rejection_reason}")
+                
+                # Показываем обновленный список записей
+                await command_appointments(message)
+            else:
+                logger.error(f"Ошибка при обновлении статуса: {response.status_code}, {response.text}")
+                await message.answer("❌ Ошибка при отклонении записи")
+    except Exception as e:
+        logger.error(f"Ошибка при обработке причины отклонения: {e}")
+        await message.answer("❌ Произошла ошибка при отклонении записи")
+    finally:
+        await state.clear()
+
+@router.callback_query(lambda c: c.data.startswith("appointment_reject_"))
+async def quick_reject_appointment_start(callback: CallbackQuery, state: FSMContext):
+    """Начало процесса быстрого отклонения записи - запрос причины"""
+    try:
+        # Извлекаем ID записи из callback data
+        appointment_id = int(callback.data.split("_")[-1])
+        
+        await state.set_state(RejectAppointmentState.waiting_for_reason)
+        await state.update_data(appointment_id=appointment_id, is_quick_reject=True)
+        
+        await callback.message.edit_text(
+            callback.message.text + "\n\nПожалуйста, введите причину отклонения записи:"
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при начале процесса быстрого отклонения записи: {e}")
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+
+@router.callback_query(lambda c: c.data.startswith("appointment_view_"))
+async def quick_view_appointment(callback: CallbackQuery):
+    """Быстрый просмотр деталей записи из уведомления"""
+    try:
+        # Извлекаем ID записи из callback data
+        appointment_id = int(callback.data.split("_")[-1])
+        
+        # Получаем и отображаем информацию о записи
+        message_text, keyboard = await get_appointment_info(appointment_id)
+        await callback.message.edit_text(message_text, reply_markup=keyboard)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при быстром просмотре записи: {e}")
+        await callback.answer("Произошла ошибка", show_alert=True)
+
+async def show_appointment_details(callback: CallbackQuery, appointment_id: int):
+    """Показать детали записи"""
+    appointment_callback = AppointmentCallback(id=appointment_id, action="view")
+    await process_appointment_selection(callback, appointment_callback)
+
 async def get_appointment_info(appointment_id: int) -> tuple[str, InlineKeyboardMarkup]:
     """Получение информации о записи"""
     try:
@@ -505,7 +792,22 @@ async def get_appointment_info(appointment_id: int) -> tuple[str, InlineKeyboard
             formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
             
             # Создаем клавиатуру с кнопками управления
-            buttons = [
+            buttons = []
+            
+            # Если запись в статусе ожидания, добавляем кнопки подтверждения и отклонения
+            if appointment.get('status') == 'pending':
+                buttons.append([
+                    InlineKeyboardButton(
+                        text="✅ Подтвердить запись",
+                        callback_data=AppointmentCallback(action="confirm", id=appointment_id).pack()
+                    ),
+                    InlineKeyboardButton(
+                        text="❌ Отклонить запись",
+                        callback_data=AppointmentCallback(action="reject", id=appointment_id).pack()
+                    )
+                ])
+            
+            buttons.extend([
                 [
                     InlineKeyboardButton(
                         text="📅 Изменить дату",
@@ -546,7 +848,7 @@ async def get_appointment_info(appointment_id: int) -> tuple[str, InlineKeyboard
                     InlineKeyboardButton(text="◀️ Назад к списку", callback_data="back_to_appointments"),
                     InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")
                 ]
-            ]
+            ])
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
             
@@ -684,4 +986,89 @@ async def process_edit_value(message: Message, state: FSMContext):
                 
     except Exception as e:
         logger.error(f"Ошибка при обновлении {field}: {e}")
-        await message.answer(f"❌ Произошла ошибка при обновлении {field}") 
+        await message.answer(f"❌ Произошла ошибка при обновлении {field}")
+
+# В конец файла добавляем новые обработчики для быстрых действий из уведомлений
+
+@router.callback_query(lambda c: c.data.startswith("appointment_confirm_"))
+async def quick_confirm_appointment(callback: CallbackQuery):
+    """Быстрое подтверждение записи из уведомления"""
+    try:
+        # Извлекаем ID записи из callback data
+        appointment_id = int(callback.data.split("_")[-1])
+        
+        async with httpx.AsyncClient() as client:
+            # Получаем информацию о записи
+            response = await client.get(f"{API_URL}/appointments/{appointment_id}")
+            if response.status_code != 200:
+                await callback.answer("Ошибка при получении данных о записи", show_alert=True)
+                return
+                
+            appointment = response.json()
+            
+            # Обновляем статус записи
+            update_data = {"status": "confirmed"}
+            update_response = await client.patch(f"{API_URL}/appointments/{appointment_id}", json=update_data)
+            
+            if update_response.status_code == 200:
+                # Получаем информацию о клиенте для уведомления
+                client_id = appointment["client_id"]
+                client_response = await client.get(f"{API_URL}/clients/{client_id}")
+                client_data = client_response.json()
+                service_response = await client.get(f"{API_URL}/services/{appointment['service_id']}")
+                service_data = service_response.json()
+                
+                # Форматируем дату и время
+                scheduled_time = datetime.fromisoformat(appointment["scheduled_time"].replace('Z', '+00:00'))
+                formatted_date = scheduled_time.strftime("%d.%m.%Y")
+                formatted_time = scheduled_time.strftime("%H:%M")
+                
+                # Отправляем уведомление клиенту
+                notification_data = {
+                    "type": "appointment_status",
+                    "appointment": {
+                        "client_id": client_data["telegram_id"],
+                        "scheduled_time": f"{formatted_date} {formatted_time}",
+                        "service_name": service_data["name"],
+                        "status": "confirmed"
+                    }
+                }
+                
+                # Отправляем уведомление через Redis
+                response = await client.post(f"{API_URL}/notifications/send", json=notification_data)
+                
+                # Обновляем текст уведомления
+                await callback.message.edit_text(
+                    callback.message.text + "\n\n✅ Запись подтверждена!",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text="👁️ Просмотреть детали",
+                            callback_data=f"appointment_view_{appointment_id}"
+                        )]
+                    ])
+                )
+                
+                await callback.answer("Запись успешно подтверждена!", show_alert=True)
+            else:
+                await callback.answer("Ошибка при обновлении статуса", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка при быстром подтверждении записи: {e}")
+        await callback.answer("Произошла ошибка", show_alert=True)
+
+@router.callback_query(lambda c: c.data.startswith("appointment_reject_"))
+async def quick_reject_appointment_start(callback: CallbackQuery, state: FSMContext):
+    """Начало процесса быстрого отклонения записи - запрос причины"""
+    try:
+        # Извлекаем ID записи из callback data
+        appointment_id = int(callback.data.split("_")[-1])
+        
+        await state.set_state(RejectAppointmentState.waiting_for_reason)
+        await state.update_data(appointment_id=appointment_id, is_quick_reject=True)
+        
+        await callback.message.edit_text(
+            callback.message.text + "\n\nПожалуйста, введите причину отклонения записи:"
+        )
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при начале процесса быстрого отклонения записи: {e}")
+        await callback.answer("❌ Произошла ошибка", show_alert=True) 

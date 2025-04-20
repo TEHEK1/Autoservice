@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from server.database import get_db
 from server.models import Appointment, AppointmentCreate, AppointmentOut, AppointmentUpdate
 from .notifications import NotificationPayload, delete_notification, schedule_notification
+from .notifications import send_notification
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -50,7 +51,6 @@ async def patch_appointments(
     old_scheduled_time = appointment_out.scheduled_time
     new_scheduled_time = update.scheduled_time
 
-
     # Обновляем SQLAlchemy модель
     for key, value in update.model_dump(exclude_unset=True).items():
         setattr(to_update, key, value)
@@ -59,20 +59,22 @@ async def patch_appointments(
     db.commit()
     db.refresh(to_update)
 
-    # Удаляем старое уведомление если есть
-    try:
-        await delete_notification(
-            f"notification_{appointment_out.client_id}_{(old_scheduled_time - timedelta(hours=1)).timestamp()}")
-    except Exception as e:
-        print(f"Ошибка при удалении старого уведомления: {e}")
+    # Если обновляется scheduled_time, обновляем уведомления
+    if new_scheduled_time is not None:
+        # Удаляем старое уведомление если есть
+        try:
+            await delete_notification(
+                f"notification_{appointment_out.client_id}_{(old_scheduled_time - timedelta(hours=1)).timestamp()}")
+        except Exception as e:
+            print(f"Ошибка при удалении старого уведомления: {e}")
 
-    # Создаем новое уведомление
-    notification = NotificationPayload(
-        scheduled_time=new_scheduled_time - timedelta(hours=1),
-        client_id=appointment_out.client_id,
-        payload={"appointment_id": id}
-    )
-    await schedule_notification(notification)
+        # Создаем новое уведомление
+        notification = NotificationPayload(
+            scheduled_time=new_scheduled_time - timedelta(hours=1),
+            client_id=appointment_out.client_id,
+            payload={"appointment_id": id}
+        )
+        await schedule_notification(notification)
     
     return to_update
 
@@ -110,6 +112,23 @@ async def create_appointment(
     logger.info(f"Создаем уведомление на {notification_time} UTC")
     print(f"Создаем уведомление на {notification_time} UTC")  # Добавляем print для отладки
     await schedule_notification(notification)
+    
+    # Отправляем немедленное уведомление администратору о новой записи
+    admin_notification = {
+        "type": "new_appointment",
+        "appointment": {
+            "id": db_appointment.id,
+            "client_id": appointment.client_id,
+            "service_id": appointment.service_id,
+            "scheduled_time": scheduled_time.isoformat(),
+            "status": appointment.status,
+            "car_model": appointment.car_model
+        }
+    }
+    
+    # Отправляем уведомление через Redis
+    logger.info("Отправляем уведомление администратору о новой записи")
+    send_notification(admin_notification)
     
     return db_appointment
 

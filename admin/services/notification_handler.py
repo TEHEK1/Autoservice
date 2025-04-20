@@ -50,6 +50,8 @@ class NotificationHandler:
                 await self._handle_appointment_reminder(data)
             elif notification_type == "appointment_status":
                 await self._handle_appointment_status(data)
+            elif notification_type == "new_appointment":
+                await self._handle_new_appointment(data)
         except Exception as e:
             logger.error(f"Ошибка при обработке уведомления: {e}")
 
@@ -132,4 +134,74 @@ class NotificationHandler:
                 
                 await self.bot.send_message(chat_id=user_id, text=text)
         except Exception as e:
-            logger.error(f"Ошибка при обработке изменения статуса записи: {e}") 
+            logger.error(f"Ошибка при обработке изменения статуса записи: {e}")
+            
+    async def _handle_new_appointment(self, data):
+        """Обработка уведомления о новой записи"""
+        try:
+            appointment = data.get("appointment", {})
+            
+            # Получаем информацию о клиенте
+            async with httpx.AsyncClient() as client:
+                client_response = await client.get(f"{API_URL}/clients/{appointment.get('client_id')}")
+                service_response = await client.get(f"{API_URL}/services/{appointment.get('service_id')}")
+                
+                client_name = "Неизвестно"
+                service_name = "Неизвестно"
+                
+                if client_response.status_code == 200:
+                    client_data = client_response.json()
+                    client_name = client_data.get("name", "Неизвестно")
+                    
+                if service_response.status_code == 200:
+                    service_data = service_response.json()
+                    service_name = service_data.get("name", "Неизвестно")
+                    
+                # Форматируем дату и время
+                scheduled_time = datetime.fromisoformat(appointment.get("scheduled_time").replace('Z', '+00:00'))
+                formatted_date = scheduled_time.strftime("%d.%m.%Y")
+                formatted_time = scheduled_time.strftime("%H:%M")
+                
+                text = (
+                    f"🆕 Новая запись требует подтверждения!\n\n"
+                    f"👤 Клиент: {client_name}\n"
+                    f"🔧 Услуга: {service_name}\n"
+                    f"🚗 Модель авто: {appointment.get('car_model', 'Не указана')}\n"
+                    f"📅 Дата: {formatted_date}\n"
+                    f"⏰ Время: {formatted_time}\n"
+                    f"📊 Статус: {appointment.get('status', 'pending')}"
+                )
+                
+                # Создаем клавиатуру для быстрого подтверждения/отклонения
+                from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="✅ Подтвердить",
+                            callback_data=f"appointment_confirm_{appointment.get('id')}"
+                        ),
+                        InlineKeyboardButton(
+                            text="❌ Отклонить",
+                            callback_data=f"appointment_reject_{appointment.get('id')}"
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="👁️ Просмотреть детали",
+                            callback_data=f"appointment_view_{appointment.get('id')}"
+                        )
+                    ]
+                ])
+                
+                # Отправляем сообщение администраторам
+                admin_chat_id = 580866264  # ID администратора или группы (настроить в конфиге)
+                await self.bot.send_message(
+                    chat_id=admin_chat_id,
+                    text=text,
+                    reply_markup=keyboard
+                )
+                
+                logger.info(f"Отправлено уведомление администратору о новой записи от клиента {client_name}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка при обработке уведомления о новой записи: {e}") 

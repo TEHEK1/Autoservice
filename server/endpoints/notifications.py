@@ -128,6 +128,15 @@ async def delete_notification(id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/send")
+async def send_notification_endpoint(payload: dict):
+    """Отправляет уведомление напрямую в Redis PubSub"""
+    try:
+        send_notification(payload)
+        return {"status": "success", "message": "Уведомление отправлено"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 def send_notification(payload: dict):
     """Отправляет уведомление в Redis Pub/Sub канал"""
     try:
