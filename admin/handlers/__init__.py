@@ -1,1 +1,1 @@
-from . import appointments, clients, main_menu, messages, services, time_slots, auth 
+from . import appointments, clients, main_menu, messages, services, time_slots, auth, profile 

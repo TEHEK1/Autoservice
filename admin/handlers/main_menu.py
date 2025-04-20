@@ -19,6 +19,7 @@ keyboard = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="🔧 Услуги", callback_data="services")],
     [InlineKeyboardButton(text="📅 Управление слотами", callback_data="time_slots")],
     [InlineKeyboardButton(text="💬 Сообщения", callback_data="messages")],
+    [InlineKeyboardButton(text="👤 Профиль", callback_data="admin_profile")],
     [InlineKeyboardButton(text="❓ Помощь", callback_data="help")]
 ])
 
@@ -72,4 +73,11 @@ async def show_help(callback: CallbackQuery):
     ])
     
     await callback.message.edit_text(help_text, reply_markup=keyboard)
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_profile")
+async def profile_menu(callback: CallbackQuery):
+    """Обработчик для перехода в меню профиля"""
+    from .profile import show_profile
+    await show_profile(callback)
     await callback.answer() 

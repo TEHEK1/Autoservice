@@ -1,17 +1,22 @@
-from aiogram import Router, types, F
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiogram.filters.callback_data import CallbackData
 import httpx
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
+import calendar
+from typing import List, Dict, Optional
+from zoneinfo import ZoneInfo
 
+from aiogram import Router, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import types
+from aiogram.filters.callback_data import CallbackData
 
 from ..config import API_URL
 from . import clients, services
+from .profile import get_admin_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +70,14 @@ class ServiceCallback(CallbackData, prefix="service"):
 
 @router.message(Command("appointments"))
 async def command_appointments(message: Message):
-    """Показать список записей"""
+    """Обработчик команды /appointments - показывает список записей"""
     try:
+        # Получаем часовой пояс администратора
+        admin_timezone = get_admin_timezone(message.from_user.id)
+        
+        # Получаем список записей
         async with httpx.AsyncClient() as client:
-            # Получаем список записей
+            # Сначала получаем список всех записей
             response = await client.get(f"{API_URL}/appointments")
             response.raise_for_status()
             appointments = response.json()
@@ -81,26 +90,27 @@ async def command_appointments(message: Message):
                 await message.answer("📝 Нет доступных записей", reply_markup=keyboard)
                 return
             
-            # Создаем кнопки для каждой записи
+            # Сортируем записи по времени
+            appointments.sort(key=lambda x: x['scheduled_time'])
+            
+            # Создаем список кнопок
             buttons = []
+            
             for appointment in appointments:
+                # Получаем информацию о клиенте
                 try:
-                    if not appointment.get('client_id'):
-                        logger.warning(f"У записи {appointment['id']} отсутствует client_id")
-                        continue
-                        
                     client_response = await client.get(f"{API_URL}/clients/{appointment['client_id']}")
-                    if client_response.status_code != 200:
-                        logger.warning(f"Ошибка при получении клиента {appointment['client_id']}: {client_response.status_code}")
-                        continue
+                    client_response.raise_for_status()
                         
                     client_data = client_response.json()
                     if not client_data:
                         logger.warning(f"Получен пустой ответ для клиента {appointment['client_id']}")
                         continue
                     
-                    scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
-                    formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
+                    # Форматируем дату и время с учетом часового пояса администратора
+                    scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00')).replace(tzinfo=ZoneInfo("UTC"))
+                    local_time = scheduled_time.astimezone(ZoneInfo(admin_timezone))
+                    formatted_time = local_time.strftime("%d.%m.%Y %H:%M")
                     
                     buttons.append([
                         InlineKeyboardButton(
@@ -734,7 +744,7 @@ async def quick_view_appointment(callback: CallbackQuery):
         # Извлекаем ID записи из callback data
         appointment_id = int(callback.data.split("_")[-1])
         
-        # Получаем и отображаем информацию о записи
+        # Получаем и отображаем информацию о записи с передачей ID администратора
         message_text, keyboard = await get_appointment_info(appointment_id)
         await callback.message.edit_text(message_text, reply_markup=keyboard)
         await callback.answer()
@@ -748,7 +758,14 @@ async def show_appointment_details(callback: CallbackQuery, appointment_id: int)
     await process_appointment_selection(callback, appointment_callback)
 
 async def get_appointment_info(appointment_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    """Получение информации о записи"""
+    """Получение информации о записи с форматированием в часовом поясе администратора
+    
+    Args:
+        appointment_id: ID записи
+        
+    Returns:
+        tuple: Текст сообщения с информацией о записи, клавиатура с кнопками управления
+    """
     try:
         async with httpx.AsyncClient() as http_client:
             # Получаем информацию о записи
@@ -787,9 +804,13 @@ async def get_appointment_info(appointment_id: int) -> tuple[str, InlineKeyboard
                 except Exception as e:
                     logger.error(f"Ошибка при получении информации об услуге {appointment['service_id']}: {e}")
             
-            # Форматируем дату и время
-            scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00'))
-            formatted_time = scheduled_time.strftime("%d.%m.%Y %H:%M")
+            # Получаем часовой пояс администратора
+            admin_timezone = get_admin_timezone(0)  # 0 - это временный ID, так как эта функция вызывается из разных мест
+            
+            # Форматируем дату и время с учетом часового пояса администратора
+            scheduled_time = datetime.fromisoformat(appointment['scheduled_time'].replace('Z', '+00:00')).replace(tzinfo=ZoneInfo("UTC"))
+            local_time = scheduled_time.astimezone(ZoneInfo(admin_timezone))
+            formatted_time = local_time.strftime("%d.%m.%Y %H:%M")
             
             # Создаем клавиатуру с кнопками управления
             buttons = []
@@ -997,63 +1018,74 @@ async def quick_confirm_appointment(callback: CallbackQuery):
         # Извлекаем ID записи из callback data
         appointment_id = int(callback.data.split("_")[-1])
         
+        # Получаем часовой пояс администратора
+        admin_timezone = get_admin_timezone(callback.from_user.id)
+        
+        # Обновляем статус записи
         async with httpx.AsyncClient() as client:
-            # Получаем информацию о записи
+            # Получаем текущую запись
             response = await client.get(f"{API_URL}/appointments/{appointment_id}")
-            if response.status_code != 200:
-                await callback.answer("Ошибка при получении данных о записи", show_alert=True)
-                return
-                
+            response.raise_for_status()
             appointment = response.json()
             
-            # Обновляем статус записи
-            update_data = {"status": "confirmed"}
-            update_response = await client.patch(f"{API_URL}/appointments/{appointment_id}", json=update_data)
+            # Обновляем статус
+            response = await client.patch(
+                f"{API_URL}/appointments/{appointment_id}", 
+                json={"status": "confirmed"}
+            )
+            response.raise_for_status()
             
-            if update_response.status_code == 200:
-                # Получаем информацию о клиенте для уведомления
-                client_id = appointment["client_id"]
-                client_response = await client.get(f"{API_URL}/clients/{client_id}")
-                client_data = client_response.json()
-                service_response = await client.get(f"{API_URL}/services/{appointment['service_id']}")
-                service_data = service_response.json()
-                
-                # Форматируем дату и время
-                scheduled_time = datetime.fromisoformat(appointment["scheduled_time"].replace('Z', '+00:00'))
-                formatted_date = scheduled_time.strftime("%d.%m.%Y")
-                formatted_time = scheduled_time.strftime("%H:%M")
-                
-                # Отправляем уведомление клиенту
-                notification_data = {
-                    "type": "appointment_status",
-                    "appointment": {
-                        "client_id": client_data["telegram_id"],
-                        "scheduled_time": f"{formatted_date} {formatted_time}",
-                        "service_name": service_data["name"],
-                        "status": "confirmed"
-                    }
-                }
-                
-                # Отправляем уведомление через Redis
-                response = await client.post(f"{API_URL}/notifications/send", json=notification_data)
-                
-                # Обновляем текст уведомления
-                await callback.message.edit_text(
-                    callback.message.text + "\n\n✅ Запись подтверждена!",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(
-                            text="👁️ Просмотреть детали",
-                            callback_data=f"appointment_view_{appointment_id}"
-                        )]
-                    ])
-                )
-                
-                await callback.answer("Запись успешно подтверждена!", show_alert=True)
-            else:
-                await callback.answer("Ошибка при обновлении статуса", show_alert=True)
+            # Получаем информацию о клиенте
+            client_response = await client.get(f"{API_URL}/clients/{appointment['client_id']}")
+            client_response.raise_for_status()
+            client_data = client_response.json()
+            
+            # Получаем информацию об услуге
+            service_response = await client.get(f"{API_URL}/services/{appointment['service_id']}")
+            service_response.raise_for_status()
+            service_data = service_response.json()
+            
+            # Форматируем дату и время с учетом часового пояса администратора
+            scheduled_time = datetime.fromisoformat(appointment["scheduled_time"].replace('Z', '+00:00')).replace(tzinfo=ZoneInfo("UTC"))
+            local_time = scheduled_time.astimezone(ZoneInfo(admin_timezone))
+            formatted_time = local_time.strftime("%d.%m.%Y %H:%M")
+            
+            # Создаем сообщение для клиента
+            message_data = {
+                "text": f"✅ Ваша запись на услугу \"{service_data['name']}\" подтверждена!\n\n"
+                        f"📅 Дата и время: {formatted_time}\n"
+                        f"💰 Стоимость: {service_data['price']} руб.\n\n"
+                        f"Ждем вас по адресу: ул. Автосервисная, 123\n"
+                        f"Контактный телефон: +7 (123) 456-78-90",
+                "user_id": client_data['id'],
+                "is_from_admin": 1,  # Сообщение от администратора
+                "is_read": 0  # Непрочитанное
+            }
+            
+            # Отправляем уведомление клиенту
+            await client.post(f"{API_URL}/messages/", json=message_data)
+            
+            # Обновляем сообщение с уведомлением
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="📝 Просмотреть запись",
+                    callback_data=f"appointment_view_{appointment_id}"
+                )]
+            ])
+            
+            await callback.message.edit_text(
+                f"✅ Запись #{appointment_id} успешно подтверждена!\n\n"
+                f"👤 Клиент: {client_data['name']}\n"
+                f"📱 Телефон: {client_data['phone_number']}\n"
+                f"🔧 Услуга: {service_data['name']}\n"
+                f"📅 Дата и время: {formatted_time}",
+                reply_markup=keyboard
+            )
+        
+        await callback.answer("✅ Запись подтверждена")
     except Exception as e:
         logger.error(f"Ошибка при быстром подтверждении записи: {e}")
-        await callback.answer("Произошла ошибка", show_alert=True)
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
 
 @router.callback_query(lambda c: c.data.startswith("appointment_reject_"))
 async def quick_reject_appointment_start(callback: CallbackQuery, state: FSMContext):

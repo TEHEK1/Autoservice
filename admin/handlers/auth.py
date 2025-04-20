@@ -25,8 +25,8 @@ async def process_password(message: Message, state: FSMContext):
     logger.info(f"Получен пароль от пользователя {user_id}")
     
     if verify_password(password):
-        # Авторизуем пользователя
-        authorized_users[user_id] = True
+        # Авторизуем пользователя (сохраняем с объектом для дополнительных данных)
+        authorized_users[user_id] = {"timezone": "Europe/Moscow"}
         
         # Сбрасываем состояние
         await state.clear()

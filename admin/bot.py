@@ -17,7 +17,7 @@ dp.message.middleware(AuthMiddleware())
 dp.callback_query.middleware(AuthMiddleware())
 
 # Регистрация всех роутеров
-from .handlers import main_menu, appointments, clients, services, messages, time_slots, auth
+from .handlers import main_menu, appointments, clients, services, messages, time_slots, auth, profile
 dp.include_router(auth.router)  # Роутер авторизации должен быть первым
 dp.include_router(main_menu.router)
 dp.include_router(appointments.router)
@@ -25,6 +25,7 @@ dp.include_router(clients.router)
 dp.include_router(services.router)
 dp.include_router(messages.router)
 dp.include_router(time_slots.router)
+dp.include_router(profile.router)
 
 async def main():
     """Запуск бота"""
